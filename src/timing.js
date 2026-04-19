@@ -43,20 +43,33 @@ export const LINE_SAMPLES  = ACTIVE_END
 
 // Frame layout: 625 lines per full frame.
 //
-// Lines 1–5   : field-1 broad pulses (vertical sync).
-// Lines 6–22  : upper blanking (no burst, no picture).
-// Lines 23–310: field-1 active picture region.
+// Lines 1–5    : field-1 broad pulses (vertical sync).
+// Lines 6–22   : upper blanking (no burst, no picture).
+// Lines 23–310 : field-1 active picture region.          (288 lines)
 // Lines 311–312: mid-frame blanking.
 // Lines 313–317: field-2 broad pulses.
 // Lines 318–335: lower blanking / field-2 preamble.
-// Lines 336–623: field-2 active picture region.
+// Lines 336–623: field-2 active picture region.          (288 lines)
 // Lines 624–625: trailer blanking.
 //
-// For the stage-2 progressive pipeline we render pictures into field 1
-// only (288 lines max) so the output never crosses the field-2 broad-
-// pulse block. Proper interlaced rendering (both fields) is a stage-4
-// concern.
+// Each field carries 288 picture rows; a full interlaced frame is 576
+// rows, with even output rows drawn by field 1 and odd by field 2
+// (ITU-R BT.470 convention). Progressive material passes the same
+// content in both fields.
 export const LINES_PER_FIELD     = 312 // nominal; real PAL is 312.5 interlaced
-export const ACTIVE_FIRST_LINE   = 23
-export const ACTIVE_LAST_LINE    = 310   // field 1 only, for progressive
-export const ACTIVE_LINE_COUNT   = ACTIVE_LAST_LINE - ACTIVE_FIRST_LINE + 1 // 288
+
+// Back-compat alias: still "the first active line of field 1".
+export const ACTIVE_FIRST_LINE       = 23
+export const FIELD1_ACTIVE_FIRST     = 23
+export const FIELD1_ACTIVE_LAST      = 310
+export const FIELD2_ACTIVE_FIRST     = 336
+export const FIELD2_ACTIVE_LAST      = 623
+
+export const FIELD_ACTIVE_LINES  = FIELD1_ACTIVE_LAST - FIELD1_ACTIVE_FIRST + 1 // 288
+export const FRAME_ACTIVE_ROWS   = FIELD_ACTIVE_LINES * 2                       // 576
+
+// Historical alias: old code referred to "the active region" as field 1
+// only. Keep this as the per-field count for call sites that don't yet
+// need to distinguish fields.
+export const ACTIVE_LINE_COUNT   = FIELD_ACTIVE_LINES
+export const ACTIVE_LAST_LINE    = FIELD1_ACTIVE_LAST

@@ -4,7 +4,7 @@
 // toggle (PAL-S vs PAL-D) and a chroma phase-error slider let you see
 // Hanover bars appear under PAL-S and disappear under PAL-D.
 
-import { encodeFrame } from './encoder.js'
+import { encodeFrame, progressive } from './encoder.js'
 import { decodeComposite } from './pipeline.js'
 import { colourBars75 } from './fixtures/bars.js'
 import { int16ToFloat32 } from './hacktv.js'
@@ -14,11 +14,13 @@ import {
 } from './timing.js'
 import { LINES_PER_FRAME, LEVEL_SYNC_TIP, LEVEL_BLANKING, LEVEL_WHITE } from './signal.js'
 
-// Stage-2 progressive = field-1 only, 288 lines.
-const W = 720, H = 288
+// Full interlaced PAL frame: 720 × 576. Progressive test material
+// (our colour bars fixture at 288 rows) is pre-doubled so both fields
+// carry the same content.
+const W = 720, H = 576
 
 async function run() {
-  const src = colourBars75(W, H)
+  const src = progressive(colourBars75(W, H >> 1), W, H >> 1)
 
   const modeRadios   = document.getElementsByName('decode-mode')
   const sourceRadios = document.getElementsByName('wave-source')

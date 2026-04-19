@@ -31,7 +31,9 @@ import {
 import {
   LINE_SAMPLES, SYNC_START, SYNC_END,
   BURST_START, BURST_END, ACTIVE_START, ACTIVE_END,
-  ACTIVE_FIRST_LINE, ACTIVE_LAST_LINE, ACTIVE_LINE_COUNT,
+  FIELD1_ACTIVE_FIRST, FIELD1_ACTIVE_LAST,
+  FIELD2_ACTIVE_FIRST, FIELD2_ACTIVE_LAST,
+  FIELD_ACTIVE_LINES, FRAME_ACTIVE_ROWS,
 } from './timing.js'
 import { rgbToYuv } from './colorspace.js'
 
@@ -60,57 +62,95 @@ const RT_HALF = Math.SQRT1_2 // 1/√2
  * @returns {{ samples: Float32Array, lines: Array }}
  */
 export function encodeFrame(rgb, width, height, opts = {}) {
-  if (height > ACTIVE_LINE_COUNT) {
-    throw new Error(`height ${height} exceeds active region ${ACTIVE_LINE_COUNT}`)
+  if (height > FRAME_ACTIVE_ROWS) {
+    throw new Error(`height ${height} exceeds frame active rows ${FRAME_ACTIVE_ROWS}`)
   }
   if (rgb.length !== width * height * 3) {
     throw new Error(`rgb length ${rgb.length} != ${width * height * 3}`)
   }
-  // `chromaPhaseError` shifts the subcarrier phase used for active-video
-  // modulation but NOT the burst. This simulates a transmission-path
-  // phase error that the decoder can't see via burst calibration — the
-  // classic set-up for observing Hanover bars on PAL-S and their
-  // disappearance on PAL-D.
+  // chromaPhaseError: rotate the subcarrier basis used for active-video
+  // modulation but leave the burst alone. Classic set-up for Hanover
+  // bars on PAL-S vs their suppression on PAL-D.
   const chromaPhaseError = opts.chromaPhaseError ?? 0
 
   const totalSamples = LINES_PER_FRAME * LINE_SAMPLES
   const samples = new Float32Array(totalSamples)
-  samples.fill(LEVEL_BLANKING) // default everything to blanking
-  const lines = new Array(LINES_PER_FRAME + 1).fill(null) // 1-based
+  samples.fill(LEVEL_BLANKING)
+  const lines = new Array(LINES_PER_FRAME + 1).fill(null)
 
-  // Centre the picture vertically within the active region.
-  const topPad = Math.floor((ACTIVE_LINE_COUNT - height) / 2)
-  const firstPictureLine = ACTIVE_FIRST_LINE + topPad
+  // Rows-per-field that the caller's image asks us to render. Even
+  // output rows (0, 2, 4, …) go to field 1; odd (1, 3, 5, …) to field 2.
+  // Progressive material passes the same content in the pair (row 2k ==
+  // row 2k+1). Interlaced material passes distinct even/odd rows.
+  const field1Rows = Math.ceil(height / 2) // rows 0, 2, 4, …
+  const field2Rows = Math.floor(height / 2) // rows 1, 3, 5, …
+
+  // Vertically centre within each field's active region.
+  const pad1 = Math.floor((FIELD_ACTIVE_LINES - field1Rows) / 2)
+  const pad2 = Math.floor((FIELD_ACTIVE_LINES - field2Rows) / 2)
+  const firstLineField1 = FIELD1_ACTIVE_FIRST + pad1
+  const firstLineField2 = FIELD2_ACTIVE_FIRST + pad2
 
   for (let line = 1; line <= LINES_PER_FRAME; line++) {
     const base = (line - 1) * LINE_SAMPLES
-
     writeLineSync(samples, base, line)
 
-    // PAL switch: +V on odd active-region lines, -V on even. Anchored to
-    // the first active line so line 23 is designated +V (matches the
-    // decoder's σ-walk convention of "first burst-bearing line = +V").
-    const vSign = ((line - ACTIVE_FIRST_LINE) & 1) === 0 ? +1 : -1
+    // PAL switch alternates per line across the whole frame. Anchored
+    // to line 23 so the first field-1 burst-bearing line is +V.
+    const vSign = ((line - FIELD1_ACTIVE_FIRST) & 1) === 0 ? +1 : -1
 
-    // Broad-pulse (field-sync) lines carry no burst and no picture —
-    // their second-half sync pulse sits right where active video and
-    // burst would otherwise be written, so we skip those entirely.
     if (isBroadPulseLine(line)) continue
 
-    if (line >= ACTIVE_FIRST_LINE && line <= ACTIVE_LAST_LINE) {
-      writeBurst(samples, base, vSign)
+    const inField1 = line >= FIELD1_ACTIVE_FIRST && line <= FIELD1_ACTIVE_LAST
+    const inField2 = line >= FIELD2_ACTIVE_FIRST && line <= FIELD2_ACTIVE_LAST
+    if (!inField1 && !inField2) continue
+
+    writeBurst(samples, base, vSign)
+
+    // Map this scanline to an image row.
+    //   field 1 → even image rows (0, 2, 4, …)
+    //   field 2 → odd  image rows (1, 3, 5, …)
+    let imageRow = -1
+    if (inField1) {
+      const fieldY = line - firstLineField1
+      if (fieldY >= 0 && fieldY < field1Rows) imageRow = fieldY * 2
+    } else if (inField2) {
+      const fieldY = line - firstLineField2
+      if (fieldY >= 0 && fieldY < field2Rows) imageRow = fieldY * 2 + 1
     }
 
-    const picY = line - firstPictureLine
-    if (picY >= 0 && picY < height) {
-      writeActiveLine(samples, base, rgb, width, picY, vSign, chromaPhaseError)
-      lines[line] = { activeStart: base + ACTIVE_START, vSign, length: ACTIVE_END - ACTIVE_START }
-    } else if (line >= ACTIVE_FIRST_LINE && line <= ACTIVE_LAST_LINE) {
-      lines[line] = { activeStart: base + ACTIVE_START, vSign, length: ACTIVE_END - ACTIVE_START }
+    if (imageRow >= 0) {
+      writeActiveLine(samples, base, rgb, width, imageRow, vSign, chromaPhaseError)
+    }
+    lines[line] = {
+      activeStart: base + ACTIVE_START,
+      vSign,
+      length: ACTIVE_END - ACTIVE_START,
+      field: inField1 ? 1 : 2,
+      imageRow,
     }
   }
 
   return { samples, lines }
+}
+
+/**
+ * Helper for progressive callers: build a 2·N-row image from an N-row
+ * image by duplicating each row. Feed the result to encodeFrame and
+ * both fields carry the same content.
+ */
+export function progressive(rgb, width, height) {
+  const out = new Float32Array(width * (height * 2) * 3)
+  for (let y = 0; y < height; y++) {
+    const src = y * width * 3
+    const dst0 = (y * 2)     * width * 3
+    const dst1 = (y * 2 + 1) * width * 3
+    for (let i = 0; i < width * 3; i++) {
+      out[dst0 + i] = rgb[src + i]
+      out[dst1 + i] = rgb[src + i]
+    }
+  }
+  return out
 }
 
 // --- horizontal/vertical sync -----------------------------------------------
