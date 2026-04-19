@@ -9,6 +9,7 @@ import { decodeComposite } from './pipeline.js'
 import { colourBars75 } from './fixtures/bars.js'
 import { colourBarsEbu } from './fixtures/bars-ebu.js'
 import { greyRamp } from './fixtures/ramp.js'
+import { frequencySweep } from './fixtures/sweep.js'
 import { int16ToFloat32 } from './hacktv.js'
 import { bandlimit, addNoise, addRinging, addPhaseJitter, addTimingDrift } from './degrade.js'
 import { floatRgbToImageData, psnrDb, psnrDbWithMargin } from './image.js'
@@ -26,6 +27,7 @@ const PATTERNS = {
   bars75:  () => progressive(colourBars75(W, H >> 1), W, H >> 1),
   barsEbu: () => progressive(colourBarsEbu(W, H >> 1), W, H >> 1),
   ramp:    () => progressive(greyRamp(W, H >> 1), W, H >> 1),
+  sweep:   () => progressive(frequencySweep(W, H >> 1), W, H >> 1),
 }
 
 async function run() {
