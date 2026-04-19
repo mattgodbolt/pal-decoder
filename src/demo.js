@@ -63,9 +63,15 @@ async function run() {
   try {
     const resp = await fetch('fixtures/hacktv-bars.int16', { cache: 'no-store' })
     if (resp.ok) {
-      hacktvSamples = int16ToFloat32(await resp.arrayBuffer())
+      const raw = int16ToFloat32(await resp.arrayBuffer())
+      // Trim to a whole-frame boundary so that tiling for longer
+      // decodes concatenates frame-to-frame cleanly (hacktv's raw
+      // capture ends mid-frame; tiled-without-trim gives a
+      // subcarrier/sync discontinuity at the seam).
+      const wholeFrames = Math.floor(raw.length / SAMPLES_PER_FRAME)
+      hacktvSamples = raw.subarray(0, wholeFrames * SAMPLES_PER_FRAME)
       document.getElementById('hacktv-status').textContent =
-        `loaded ${(hacktvSamples.length * 2 / 1024 / 1024).toFixed(2)} MB capture (${(hacktvSamples.length / SAMPLES_PER_FRAME).toFixed(1)} frames)`
+        `loaded ${(hacktvSamples.length * 2 / 1024 / 1024).toFixed(2)} MB capture (${wholeFrames} frames)`
     } else {
       document.getElementById('hacktv-status').textContent =
         'no fixture (run `make fixtures` to generate)'
