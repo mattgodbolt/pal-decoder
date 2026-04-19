@@ -20,7 +20,7 @@
 
 import { findSyncEdges } from './sync.js'
 import { HorizontalPLL, trackLines } from './pll.js'
-import { findLineOneSample } from './vsync.js'
+import { findFieldOneSample } from './vsync.js'
 import { measureBurst } from './burst.js'
 import { decodeFrame as decodeFrameNotch } from './decoder-notch.js'
 import { decodeFrame as decodeFramePald }  from './decoder-pald.js'
@@ -64,7 +64,10 @@ export class PalDecoder {
     const edges = findSyncEdges(samples)
 
     if (!this.pll) {
-      const lineOne = findLineOneSample(samples) ?? 0
+      // Use field-1 detection (requires ≥3 broad-pulse groups in the
+      // buffer to disambiguate field 1 from field 2); falls back to
+      // "first group is field 1" when there aren't enough.
+      const lineOne = findFieldOneSample(samples) ?? 0
       this.pll = new HorizontalPLL({
         period: LINE_SAMPLES,
         position: lineOne + SYNC_START - 0.5,
