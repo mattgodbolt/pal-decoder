@@ -115,9 +115,11 @@ async function run() {
     if (driftSmp > 0) path = addTimingDrift(path, driftSmp)
     if (jitterSmp > 0) path = addPhaseJitter(path, jitterSmp)
     if (noiseLvl > 0) path = addNoise(path, noiseLvl)
-    // Tile so the start-offset slider always has enough signal to decode
-    // a full frame from (otherwise mid-frame offsets run off the end).
-    ownSamples = tileForLength(path, startSample + 2 * SAMPLES_PER_FRAME)
+    // Tile so the PLL always has enough signal: we need startSample +
+    // (framesToSettle + 1) frames of content, plus a margin frame so
+    // the final decode doesn't run off the end.
+    const needed = startSample + (framesToSettle + 2) * SAMPLES_PER_FRAME
+    ownSamples = tileForLength(path, needed)
     const ownDecoded = decodeComposite(ownSamples, W, H,
       { mode, startSample, framesToSettle })
     renderPair('own-src', 'own-out', src, ownDecoded)
@@ -128,7 +130,7 @@ async function run() {
 
     // HackTV path.
     if (hacktvSamples) {
-      const tiled = tileForLength(hacktvSamples, startSample + 2 * SAMPLES_PER_FRAME)
+      const tiled = tileForLength(hacktvSamples, needed)
       const decoded = decodeComposite(tiled, W, H,
         { mode, startSample, framesToSettle })
       renderPair(null, 'hacktv-out', null, decoded)
