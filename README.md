@@ -115,13 +115,23 @@ tools/
   decode-hacktv.js CLI: HackTV capture → PPM
 ```
 
-## Future directions (not period-authentic for the TX10, noted for later)
+## Future directions
 
 - **Adaptive comb filter** (2D or 3D). Switches per-region between
   notch and comb based on local horizontal-vs-vertical luma gradient,
   so you get the best of both. First appeared in consumer TVs around
   1990 once DSP chips got cheap; wrong era for the TX10. Good fit for
   a "modern display, authentically-bad source signal" mode.
+- **Real-world capture loading.** vhs-decode / ld-decode produce .tbc
+  baseband files at their own sample rates (typically 40 MSPS for
+  VHS). To ingest we'd need a resampler to 4×Fsc and a format parser.
+  Useful for decoder-robustness stress-testing; orthogonal to the
+  primary "emulator → encoder → decoder" workflow.
+- **Streaming PLL acquisition simulation.** Currently the pipeline is
+  batch; to truly show a picture rolling-then-locking over the first
+  few fields of "power-on" we'd need a stateful streaming pipeline
+  that reports PLL state per decoded frame. Current demo approximates
+  via the vsync mis-lock slider.
 - **Non-square pixel aspect** (real PAL has a display aspect of 4:3
   over a ~702-wide active area). Our 720×576 canvases are 5:4.
 

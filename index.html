@@ -25,13 +25,34 @@
   <h1>PAL Decoder — stage 2</h1>
   <p>Stage-2 pipeline: composite samples → sync detection → horizontal PLL → vertical sync → per-line burst phase lock → notch decode. Progressive, field-1-only (288 lines).</p>
 
-  <h2>Decoder mode &amp; signal conditioning</h2>
+  <h2>Test pattern &amp; decoder mode</h2>
   <div class="row" style="align-items: center; gap: 1.5rem; margin-bottom: 0.6rem;">
+    <div>
+      <label>source:
+        <select id="source-pattern">
+          <option value="bars75">75% colour bars (SMPTE)</option>
+          <option value="barsEbu">100/0/75/0 bars (EBU)</option>
+          <option value="ramp">greyscale ramp</option>
+        </select>
+      </label>
+    </div>
     <div>
       <label><input type="radio" name="decode-mode" value="notch"> PAL-S (notch)</label>
       <label><input type="radio" name="decode-mode" value="pald" checked> PAL-D (+delay line)</label>
       <label><input type="radio" name="decode-mode" value="comb"> Comb (2H) +PAL-D</label>
     </div>
+  </div>
+
+  <h2>Lock state (simulate a CRT finding sync)</h2>
+  <div class="row" style="align-items: center; gap: 1.5rem; margin-bottom: 0.3rem;">
+    <span class="stat" style="min-width: 9rem;">start sample offset</span>
+    <input type="range" id="start-offset" min="0" max="1000" value="0" style="flex: 1;">
+    <span class="stat" id="start-offset-label" style="min-width: 10ch;">0</span>
+  </div>
+  <div class="row" style="align-items: center; gap: 1.5rem; margin-bottom: 0.6rem;">
+    <span class="stat" style="min-width: 9rem;">vsync mis-lock</span>
+    <input type="range" id="vsync-offset" min="-30" max="30" value="0" style="flex: 1;">
+    <span class="stat" id="vsync-offset-label" style="min-width: 10ch;">0</span>
   </div>
   <div class="row" style="align-items: center; gap: 1.5rem; margin-bottom: 0.3rem;">
     <span class="stat" style="min-width: 9rem;">chroma phase error</span>

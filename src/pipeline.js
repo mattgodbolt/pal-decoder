@@ -22,6 +22,7 @@ import { decodeFrame as decodeFrameComb }  from './decoder-comb.js'
 import { LINES_PER_FRAME } from './signal.js'
 import {
   SYNC_START, BURST_START, BURST_END, ACTIVE_START, ACTIVE_END, LINE_SAMPLES,
+  FIELD1_ACTIVE_FIRST,
 } from './timing.js'
 import { BURST_PEAK } from './encoder.js'
 
@@ -54,31 +55,38 @@ const DECODERS = {
  *        - `comb`:  comb separator + PAL-D averaging (also cancels
  *                   cross-luminance dot crawl at sharp transitions).
  *        Default: 'pald'.
+ * @param {number} [opts.startSample]      skip the first N samples of
+ *        the input before decoding. Use to land mid-frame and exercise
+ *        the vsync detector on different starting points.
+ * @param {number} [opts.vsyncLineOffset]  add N full lines to the
+ *        detected line-1 position. Simulates a CRT's vertical-hold
+ *        mis-lock: picture rolls up/down.
  * @returns {Float32Array}
  */
 export function decodeComposite(samples, width, height, opts = {}) {
   const mode = opts.mode ?? 'pald'
   const decodeFrame = DECODERS[mode]
   if (!decodeFrame) throw new Error(`unknown decoder mode: ${mode}`)
-  const edges = findSyncEdges(samples)
 
-  // Vertical sync: locate line 1. If we can't find a broad-pulse sequence
-  // we fall back to assuming line 1 = sample 0, which matches our encoder
-  // when capture starts exactly at the frame boundary. In general this is
-  // where a real CRT would briefly roll until it locked.
-  const lineOneSample = findLineOneSample(samples) ?? 0
+  // Optionally start decoding mid-signal. subarray is a zero-copy view.
+  const startSample = Math.max(0, Math.floor(opts.startSample ?? 0))
+  const input = startSample > 0 ? samples.subarray(startSample) : samples
 
-  // Seed the horizontal PLL at line 1's predicted sync edge, so that
-  // the 5 VBI lines free-run (we have no narrow sync edges there) and
-  // the PLL locks on at line 6.
+  const edges = findSyncEdges(input)
+
+  // Vertical sync.
+  const detectedLineOne = findLineOneSample(input) ?? 0
+  const vsyncLineOffset = opts.vsyncLineOffset ?? 0
+  const lineOneSample = detectedLineOne + vsyncLineOffset * LINE_SAMPLES
+
   const pll = new HorizontalPLL({
     period: LINE_SAMPLES,
     position: lineOneSample + SYNC_START - 0.5,
   })
   const tracked = trackLines(edges, LINES_PER_FRAME, { pll })
 
-  const lines = buildLineMetadata(samples, tracked)
-  return decodeFrame(samples, lines, width, height)
+  const lines = buildLineMetadata(input, tracked)
+  return decodeFrame(input, lines, width, height)
 }
 
 export function buildLineMetadata(samples, tracked) {
