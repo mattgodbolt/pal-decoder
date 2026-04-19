@@ -25,17 +25,27 @@
   <h1>PAL Decoder — stage 2</h1>
   <p>Stage-2 pipeline: composite samples → sync detection → horizontal PLL → vertical sync → per-line burst phase lock → notch decode. Progressive, field-1-only (288 lines).</p>
 
-  <h2>Decoder mode & synthetic phase error</h2>
+  <h2>Decoder mode &amp; signal conditioning</h2>
   <div class="row" style="align-items: center; gap: 1.5rem; margin-bottom: 0.6rem;">
     <div>
       <label><input type="radio" name="decode-mode" value="pald" checked> PAL-D (delay line)</label>
       <label><input type="radio" name="decode-mode" value="notch"> PAL-S (notch only)</label>
     </div>
-    <div style="display: flex; align-items: center; gap: 0.5rem; flex: 1;">
-      <span class="stat">chroma phase error</span>
-      <input type="range" id="phase-error" min="-60" max="60" value="0" style="flex: 1;">
-      <span class="stat" id="phase-error-label" style="min-width: 4ch;">0°</span>
-    </div>
+  </div>
+  <div class="row" style="align-items: center; gap: 1.5rem; margin-bottom: 0.3rem;">
+    <span class="stat" style="min-width: 9rem;">chroma phase error</span>
+    <input type="range" id="phase-error" min="-60" max="60" value="0" style="flex: 1;">
+    <span class="stat" id="phase-error-label" style="min-width: 4ch;">0°</span>
+  </div>
+  <div class="row" style="align-items: center; gap: 1.5rem; margin-bottom: 0.3rem;">
+    <span class="stat" style="min-width: 9rem;">transmission bandwidth</span>
+    <input type="range" id="bandwidth" min="2" max="18" step="0.5" value="5" style="flex: 1;">
+    <span class="stat" id="bandwidth-label" style="min-width: 6ch;">5 MHz</span>
+  </div>
+  <div class="row" style="align-items: center; gap: 1.5rem; margin-bottom: 0.6rem;">
+    <span class="stat" style="min-width: 9rem;">AWGN noise (RMS)</span>
+    <input type="range" id="noise" min="0" max="50" value="0" style="flex: 1;">
+    <span class="stat" id="noise-label" style="min-width: 6ch;">off</span>
   </div>
 
   <h2>Our own encoder, round-tripped</h2>

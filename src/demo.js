@@ -8,6 +8,7 @@ import { encodeFrame, progressive } from './encoder.js'
 import { decodeComposite } from './pipeline.js'
 import { colourBars75 } from './fixtures/bars.js'
 import { int16ToFloat32 } from './hacktv.js'
+import { bandlimit, addNoise } from './degrade.js'
 import { floatRgbToImageData, psnrDb, psnrDbWithMargin } from './image.js'
 import {
   ACTIVE_FIRST_LINE, ACTIVE_LINE_COUNT, LINE_SAMPLES, ACTIVE_START, ACTIVE_END,
@@ -26,6 +27,10 @@ async function run() {
   const sourceRadios = document.getElementsByName('wave-source')
   const phaseSlider  = document.getElementById('phase-error')
   const phaseLabel   = document.getElementById('phase-error-label')
+  const bwSlider     = document.getElementById('bandwidth')
+  const bwLabel      = document.getElementById('bandwidth-label')
+  const noiseSlider  = document.getElementById('noise')
+  const noiseLabel   = document.getElementById('noise-label')
   const lineSlider   = document.getElementById('line')
   const lineLabel    = document.getElementById('line-label')
 
@@ -58,13 +63,20 @@ async function run() {
   const render = () => {
     const mode       = picked(modeRadios)   ?? 'pald'
     const phaseDeg   = Number(phaseSlider.value)
+    const bwMhz      = Number(bwSlider.value)
+    const noiseLvl   = Number(noiseSlider.value) / 1000
     const waveSource = picked(sourceRadios) ?? 'own'
 
     phaseLabel.textContent = `${phaseDeg}°`
+    bwLabel.textContent    = bwMhz >= 18 ? 'off' : `${bwMhz} MHz`
+    noiseLabel.textContent = noiseLvl === 0 ? 'off' : noiseLvl.toFixed(3)
 
-    // Own encoder -> decoder.
+    // Own encoder -> optional bandlimit -> optional noise -> decoder.
     const enc = encodeFrame(src, W, H, { chromaPhaseError: phaseDeg * Math.PI / 180 })
-    ownSamples = enc.samples
+    let path = enc.samples
+    if (bwMhz < 18) path = bandlimit(path, bwMhz * 1e6)
+    if (noiseLvl > 0) path = addNoise(path, noiseLvl)
+    ownSamples = path
     const ownDecoded = decodeComposite(ownSamples, W, H, { mode })
     renderPair('own-src', 'own-out', src, ownDecoded)
     document.getElementById('own-psnr-all').textContent =
@@ -90,6 +102,8 @@ async function run() {
   for (const r of modeRadios)   r.addEventListener('change', render)
   for (const r of sourceRadios) r.addEventListener('change', render)
   phaseSlider.addEventListener('input', render)
+  bwSlider   .addEventListener('input', render)
+  noiseSlider.addEventListener('input', render)
   lineSlider .addEventListener('input', render)
 }
 
