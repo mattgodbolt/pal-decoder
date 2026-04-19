@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import { findSyncEdges } from '../src/sync.js'
 import { encodeFrame } from '../src/encoder.js'
 import { LINES_PER_FRAME } from '../src/signal.js'
-import { LINE_SAMPLES, SYNC_START } from '../src/timing.js'
+import { LINE_SAMPLES, SYNC_START, lineToSample, isBroadPulseLine } from '../src/timing.js'
 
 const solid = (w, h, r, g, b) => {
   const out = new Float32Array(w * h * 3)
@@ -17,19 +17,17 @@ test('narrow sync edges cover all non-VBI lines', () => {
   const { samples } = encodeFrame(solid(w, h, 0.5, 0.5, 0.5), w, h)
   const edges = findSyncEdges(samples)
 
-  // 625 total lines minus 10 broad-pulse lines (1–5, 313–317) = 615
-  // narrow sync edges.
-  assert.equal(edges.length, 615)
+  // 624 usable lines minus 10 broad-pulse lines (1–5, 313–317) = 614
+  // narrow sync edges. Line 625 isn't written.
+  assert.equal(edges.length, 614)
 
-  // First narrow edge is on line 6; each subsequent edge lands within a
-  // sub-sample of (line - 1)·LINE_SAMPLES + SYNC_START, skipping VBI.
-  const isBroad = (line) =>
-    (line >= 1 && line <= 5) || (line >= 313 && line <= 317)
-
+  // Each edge lands at lineToSample(N) + SYNC_START (- 0.5 for the
+  // interp offset); use lineToSample so field 2's half-line offset is
+  // accounted for.
   let idx = 0
-  for (let line = 1; line <= LINES_PER_FRAME; line++) {
-    if (isBroad(line)) continue
-    const expected = (line - 1) * LINE_SAMPLES + SYNC_START
+  for (let line = 1; line <= 624; line++) {
+    if (isBroadPulseLine(line)) continue
+    const expected = lineToSample(line) + SYNC_START
     const got = edges[idx++]
     assert.ok(Math.abs(got - expected) < 1.0,
       `line ${line}: edge ${got}, expected ${expected}`)

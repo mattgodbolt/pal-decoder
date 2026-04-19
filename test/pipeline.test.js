@@ -35,30 +35,34 @@ test('end-to-end round-trip via PLL matches 30 dB target', () => {
   assert.ok(psnr > 30, `PLL round-trip PSNR ${psnr.toFixed(2)} dB`)
 })
 
-test('buildLineMetadata recovers vSign matching the encoder', () => {
+test('decoder recovers vSign matching the encoder', async () => {
+  const { PalDecoder } = await import('../src/pal-decoder.js')
+  const { HorizontalPLL, trackLines } = await import('../src/pll.js')
+  const { findSyncEdges } = await import('../src/sync.js')
+  const { findFieldOneSample } = await import('../src/vsync.js')
+  const { LINES_PER_FRAME } = await import('../src/signal.js')
+  const { FIELD_2_START } = await import('../src/timing.js')
+
   const w = 32, h = 32
   const { samples, lines: truth } = encodeFrame(colourBars75(w, h), w, h)
-  const edges = findSyncEdges(samples)
-  // Seed the PLL at the line-1 sample found by vertical-sync, as the
-  // real pipeline does — otherwise tracked[] is offset by the VBI lines
-  // the horizontal PLL has no edges for.
-  const lineOne = findLineOneSample(samples) ?? 0
-  const pll = new HorizontalPLL({
-    period: LINE_SAMPLES,
-    position: lineOne + SYNC_START - 0.5,
-  })
-  const tracked = trackLines(edges, truth.length - 1, { pll })
-  const recovered = buildLineMetadata(samples, tracked)
 
-  // For active-region lines carrying a burst, vSign must match truth.
+  // Rebuild metadata via the stateful decoder path (two field PLLs).
+  const edges = findSyncEdges(samples)
+  const lineOne = findFieldOneSample(samples) ?? 0
+  const pllF1 = new HorizontalPLL({ period: LINE_SAMPLES, position: lineOne + SYNC_START - 0.5 })
+  const pllF2 = new HorizontalPLL({ period: LINE_SAMPLES, position: lineOne + FIELD_2_START + SYNC_START - 0.5 })
+  const tr1 = trackLines(edges, LINES_PER_FRAME, { pll: pllF1 })
+  const tr2 = trackLines(edges, LINES_PER_FRAME, { pll: pllF2 })
+  const recovered = buildLineMetadata(samples, tr1, tr2)
+
   let checked = 0
-  for (let L = ACTIVE_FIRST_LINE; L < ACTIVE_FIRST_LINE + 100; L++) {
+  for (let L = 1; L <= 624; L++) {
     if (truth[L] && recovered[L]) {
       assert.equal(recovered[L].vSign, truth[L].vSign, `line ${L}`)
       checked++
     }
   }
-  assert.ok(checked > 10)
+  assert.ok(checked > 10, `only checked ${checked} lines`)
 })
 
 test('pipeline matches encoder-metadata decoding pixel-for-pixel (within tolerance)', () => {

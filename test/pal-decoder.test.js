@@ -51,11 +51,12 @@ test('reset() returns the decoder to cold-lock behaviour', () => {
 
   const dec = new PalDecoder({ mode: 'pald', width: w, height: h * 2 })
   dec.decodeFrame(samples)
-  // After decoding once, PLL is initialised.
-  assert.ok(dec.pll !== null)
+  // After decoding once, both field PLLs are initialised.
+  assert.ok(dec.pllField1 !== null)
+  assert.ok(dec.pllField2 !== null)
   dec.reset()
-  assert.equal(dec.pll, null)
-  // And still works after a reset.
+  assert.equal(dec.pllField1, null)
+  assert.equal(dec.pllField2, null)
   const rgb = dec.decodeFrame(samples)
   assert.equal(rgb.length, w * h * 2 * 3)
 })

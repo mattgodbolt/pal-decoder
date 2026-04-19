@@ -5,6 +5,7 @@ import { encodeFrame, BURST_PEAK } from '../src/encoder.js'
 import {
   LINE_SAMPLES, SYNC_START, SYNC_END, BURST_START, BURST_END,
   ACTIVE_START, ACTIVE_END, ACTIVE_FIRST_LINE, ACTIVE_LINE_COUNT,
+  lineToSample,
 } from '../src/timing.js'
 import { LINES_PER_FRAME } from '../src/signal.js'
 import {
@@ -25,10 +26,13 @@ test('output has correct size', () => {
 
 test('every line carries a horizontal sync pulse', () => {
   const { samples } = encodeFrame(solid(10, 10, 0.5, 0.5, 0.5), 10, 10)
-  for (let line = 1; line <= LINES_PER_FRAME; line++) {
-    const base = (line - 1) * LINE_SAMPLES
+  // Lines 1..624 are valid (1..312 = field 1, 313..624 = field 2 at
+  // half-line offset). Line 625 is unused. Use lineToSample() rather
+  // than assuming a uniform grid — field 2 starts half a line into
+  // what would be line 313's integer-grid position.
+  for (let line = 1; line <= 624; line++) {
+    const base = lineToSample(line)
     for (let i = SYNC_START; i < SYNC_END; i++) {
-      // Float32 precision: sync tip is -0.3 ± a few ulps.
       assert.ok(Math.abs(samples[base + i] - LEVEL_SYNC_TIP) < 1e-6,
         `line ${line} sample ${i} = ${samples[base + i]}`)
     }

@@ -1,64 +1,61 @@
 // PAL composite encoder. Consumes an RGB image (Float32Array, layout
 // width*height*3, values in [0,1]) and produces:
-//   - samples: Float32Array of composite video at 4×Fsc, one full 625-line
-//     frame, in IRE-equivalent units (sync = -0.3, blanking = 0, white = +0.7).
-//   - lines:   per-line metadata, indexed by absolute line number (1-based,
-//              so element 0 is unused). Each entry is { activeStart, vSign }
-//              or null for lines outside the active region.
+//   - samples: Float32Array of composite video at 4×Fsc, one full frame
+//     (FRAME_SAMPLES = 709375 samples), in IRE-equivalent units (sync =
+//     -0.3, blanking = 0, peak white = +0.7).
+//   - lines:   per-absolute-line-number metadata (1..624). Each entry is
+//              { activeStart, vSign, field, imageRow, length } or null
+//              for lines outside an active region.
 //
-// PAL correctness notes:
-//   * Subcarrier phase is CONTINUOUS across lines: every sample at absolute
-//     index i has subcarrier phase i·π/2 (at 4×Fsc). The decoder uses the
-//     same indexing, so encoder/decoder round-trip is identity. The burst
-//     is what tells a generic decoder (or ours on non-self-produced
-//     signals) where the U/V axes actually are per line.
-//   * Vertical sync: lines 1–5 and 313–317 (field 1) carry the 5-pulse
-//     broad-pulse blocks that signal start-of-field; lines 6–7.5 and
-//     therein carry 2.35 µs equalising pulses. This is what a vertical
-//     PLL locks onto to know which line is line 1.
-//   * Progressive: one image rendered on every active line. Interlace
-//     (fields on alternating lines) is deferred.
-//   * Line timing is rounded to integer samples (1135 per line); real PAL
-//     is 1135.0064. HackTV also rounds at 4×Fsc per its documentation.
-//     This is a documented approximation, not a hidden expedient.
+// Real-PAL-shaped output:
+//   * Subcarrier phase is CONTINUOUS across the whole frame: every
+//     sample at absolute index i carries subcarrier phase i·π/2.
+//     Encoder and decoder agree so round-trip is identity; the burst
+//     tells generic decoders where the U/V axes sit per line.
+//   * Vertical sync: field 1 broad pulses on absolute lines 1–5; field
+//     2 broad pulses on absolute lines 313–317, but at a HALF-LINE
+//     OFFSET — field 2 begins at sample FIELD_2_START = 354688, i.e.
+//     568 samples into what would be the integer "line 313" position.
+//     That half-line stagger is what creates real PAL's interlace.
+//   * Active-video lines: field 1 = abs lines 23..310 (288 lines);
+//     field 2 = abs lines 335..622 (288 lines, at half-line offset).
+//   * Image rows map to scanlines as ITU-R BT.470 interlace: even rows
+//     → field 1, odd rows → field 2. Use lineToSample() to find each
+//     line's sample offset rather than assuming a uniform grid.
+//   * Line timing rounded to integer 1135 samples (real PAL is
+//     1135.0064); HackTV at 4×Fsc rounds the same way. Documented
+//     approximation, not a hidden expedient.
 
-import {
-  LEVEL_BLANKING, LEVEL_SYNC_TIP, LEVEL_BLACK, LEVEL_WHITE,
-} from './signal.js'
-import {
-  LINES_PER_FRAME,
-} from './signal.js'
+import { LEVEL_BLANKING, LEVEL_SYNC_TIP, LEVEL_BLACK, LEVEL_WHITE } from './signal.js'
+import { LINES_PER_FRAME } from './signal.js'
 import {
   LINE_SAMPLES, SYNC_START, SYNC_END,
   BURST_START, BURST_END, ACTIVE_START, ACTIVE_END,
   FIELD1_ACTIVE_FIRST, FIELD1_ACTIVE_LAST,
   FIELD2_ACTIVE_FIRST, FIELD2_ACTIVE_LAST,
-  FIELD_ACTIVE_LINES, FRAME_ACTIVE_ROWS,
+  FIELD_ACTIVE_LINES, FRAME_ACTIVE_ROWS, FRAME_SAMPLES,
+  lineToSample, lineField, isBroadPulseLine,
 } from './timing.js'
 import { rgbToYuv } from './colorspace.js'
 
-// Burst amplitude (peak, not peak-to-peak) on our normalised scale.
-// Standard PAL burst is 300 mVpp — equal to the sync pulse swing — so peak
-// amplitude is half the sync depth: 0.15.
+// Burst amplitude (peak). Standard PAL burst is 300 mVpp = sync swing;
+// peak = 0.15 on our normalised scale.
 export const BURST_PEAK = 0.15
 
-// Subcarrier samples at 4×Fsc, indexed by (absolute_sample_index & 3).
-// Continuous across the whole signal — "phase n·π/2 at sample n".
 const SIN_TAB = [0, 1, 0, -1]
 const COS_TAB = [1, 0, -1, 0]
-
-// PAL swinging burst: on +V lines the burst vector is at +135° from the
-// +U axis; on -V lines, -135°. Decomposed into sin/cos components:
-//   +V line: burst(t) =  A · (-√½ sin ωt + √½ cos ωt)   [U = -A/√2, V = +A/√2]
-//   -V line: burst(t) =  A · (-√½ sin ωt - √½ cos ωt)   [U = -A/√2, V = -A/√2]
-const RT_HALF = Math.SQRT1_2 // 1/√2
+const RT_HALF = Math.SQRT1_2
 
 /**
- * Encode one progressive frame.
+ * Encode one frame.
  *
- * @param {Float32Array} rgb    image data, width*height*3, values in [0,1]
+ * @param {Float32Array} rgb    width*height*3, values in [0,1]
  * @param {number} width
- * @param {number} height       must be <= ACTIVE_LINE_COUNT (600)
+ * @param {number} height       ≤ FRAME_ACTIVE_ROWS (576)
+ * @param {object} [opts]
+ * @param {number} [opts.chromaPhaseError]  subcarrier phase offset
+ *        injected into active-video modulation but NOT the burst.
+ *        Useful to demo Hanover bars under PAL-S.
  * @returns {{ samples: Float32Array, lines: Array }}
  */
 export function encodeFrame(rgb, width, height, opts = {}) {
@@ -68,35 +65,30 @@ export function encodeFrame(rgb, width, height, opts = {}) {
   if (rgb.length !== width * height * 3) {
     throw new Error(`rgb length ${rgb.length} != ${width * height * 3}`)
   }
-  // chromaPhaseError: rotate the subcarrier basis used for active-video
-  // modulation but leave the burst alone. Classic set-up for Hanover
-  // bars on PAL-S vs their suppression on PAL-D.
   const chromaPhaseError = opts.chromaPhaseError ?? 0
 
-  const totalSamples = LINES_PER_FRAME * LINE_SAMPLES
-  const samples = new Float32Array(totalSamples)
+  const samples = new Float32Array(FRAME_SAMPLES)
   samples.fill(LEVEL_BLANKING)
   const lines = new Array(LINES_PER_FRAME + 1).fill(null)
 
-  // Rows-per-field that the caller's image asks us to render. Even
-  // output rows (0, 2, 4, …) go to field 1; odd (1, 3, 5, …) to field 2.
-  // Progressive material passes the same content in the pair (row 2k ==
-  // row 2k+1). Interlaced material passes distinct even/odd rows.
-  const field1Rows = Math.ceil(height / 2) // rows 0, 2, 4, …
-  const field2Rows = Math.floor(height / 2) // rows 1, 3, 5, …
-
-  // Vertically centre within each field's active region.
+  const field1Rows = Math.ceil(height / 2)
+  const field2Rows = Math.floor(height / 2)
   const pad1 = Math.floor((FIELD_ACTIVE_LINES - field1Rows) / 2)
   const pad2 = Math.floor((FIELD_ACTIVE_LINES - field2Rows) / 2)
   const firstLineField1 = FIELD1_ACTIVE_FIRST + pad1
   const firstLineField2 = FIELD2_ACTIVE_FIRST + pad2
 
   for (let line = 1; line <= LINES_PER_FRAME; line++) {
-    const base = (line - 1) * LINE_SAMPLES
+    // Line's sample origin respects the half-line offset for field 2.
+    // Absolute line numbers 1..312 are field 1 at integer line grid.
+    // 313..624 are field 2 at field_2_start + (line-313)·LINE_SAMPLES.
+    if (line > 624) continue // line 625 unused in our model
+    const base = lineToSample(line)
+
     writeLineSync(samples, base, line)
 
-    // PAL switch alternates per line across the whole frame. Anchored
-    // to line 23 so the first field-1 burst-bearing line is +V.
+    // PAL switch alternates per absolute-line number across the whole
+    // frame (each scan line flips V).
     const vSign = ((line - FIELD1_ACTIVE_FIRST) & 1) === 0 ? +1 : -1
 
     if (isBroadPulseLine(line)) continue
@@ -107,14 +99,12 @@ export function encodeFrame(rgb, width, height, opts = {}) {
 
     writeBurst(samples, base, vSign)
 
-    // Map this scanline to an image row.
-    //   field 1 → even image rows (0, 2, 4, …)
-    //   field 2 → odd  image rows (1, 3, 5, …)
+    // Map this scanline to an image row: field 1 → even rows, field 2 → odd.
     let imageRow = -1
     if (inField1) {
       const fieldY = line - firstLineField1
       if (fieldY >= 0 && fieldY < field1Rows) imageRow = fieldY * 2
-    } else if (inField2) {
+    } else {
       const fieldY = line - firstLineField2
       if (fieldY >= 0 && fieldY < field2Rows) imageRow = fieldY * 2 + 1
     }
@@ -135,15 +125,15 @@ export function encodeFrame(rgb, width, height, opts = {}) {
 }
 
 /**
- * Helper for progressive callers: build a 2·N-row image from an N-row
- * image by duplicating each row. Feed the result to encodeFrame and
- * both fields carry the same content.
+ * Helper for progressive callers: build a 2N-row image from an N-row
+ * image by duplicating each row. Both fields then carry the same
+ * content when fed to encodeFrame.
  */
 export function progressive(rgb, width, height) {
   const out = new Float32Array(width * (height * 2) * 3)
   for (let y = 0; y < height; y++) {
     const src = y * width * 3
-    const dst0 = (y * 2)     * width * 3
+    const dst0 = (y * 2) * width * 3
     const dst1 = (y * 2 + 1) * width * 3
     for (let i = 0; i < width * 3; i++) {
       out[dst0 + i] = rgb[src + i]
@@ -153,42 +143,18 @@ export function progressive(rgb, width, height) {
   return out
 }
 
-// --- horizontal/vertical sync -----------------------------------------------
-//
-// 625/50 PAL sync structure per ITU-R BT.470:
-//   Lines 1–5   : five BROAD (field-sync) pulses, each ~27.3 µs = half-line
-//                 below blanking, with a narrow rise in between.
-//   Lines 6–7.5 : five EQUALISING pulses, each ~2.35 µs wide, at the
-//                 beginning of each half-line.
-//   Lines 7.5–23: normal 4.7 µs horizontal syncs (here we just start from
-//                 line 8; equalising trail between 6 and 7.5 rounded).
-//   Lines 313–317: field-2 broad pulses.
-//   Etc.
-// For this stage-2 progressive pipeline we use a simplified but still-
-// detectable scheme: broad pulses on lines 1..5 and 313..317 (full
-// half-line below-blanking), normal sync elsewhere. Equalising pulses
-// are omitted — they're there in real PAL to keep interlace stable, and
-// we're progressive.
-
-const BROAD_PULSE_LINES_FIELD1 = [1, 2, 3, 4, 5]
-const BROAD_PULSE_LINES_FIELD2 = [313, 314, 315, 316, 317]
-
-function isBroadPulseLine(line) {
-  return BROAD_PULSE_LINES_FIELD1.includes(line) || BROAD_PULSE_LINES_FIELD2.includes(line)
-}
-
 function writeLineSync(samples, base, line) {
   if (isBroadPulseLine(line)) {
-    // Two broad pulses per line (each spanning ~half a line), separated
-    // by a short blanking rise. We put the first broad pulse starting
-    // from sample 0 and running for (LINE_SAMPLES/2 - short gap); a short
-    // blanking interval; then a second broad pulse running to the end of
-    // the line minus a gap.
+    // Broad pulses: two ~half-line-wide sync-tip pulses per broad-pulse
+    // line, each separated by a short blanking gap. (We emit a
+    // simplified broad-pulse structure — enough for vertical-sync
+    // detection. Real PAL has 5 broad pulses across 2.5 lines; our
+    // per-line model gives the decoder the same wide-pulse signal
+    // regardless.)
     const half = LINE_SAMPLES >> 1
-    const gap  = Math.round(2.3e-6 * 17_734_475) // ~2.3 µs gap at line mid / end
-    for (let i = 0;           i < half - gap;       i++) samples[base + i] = LEVEL_SYNC_TIP
-    for (let i = half;        i < LINE_SAMPLES - gap; i++) samples[base + i] = LEVEL_SYNC_TIP
-    // Gaps between pulses remain at blanking (0) from the samples.fill.
+    const gap  = Math.round(2.3e-6 * 17_734_475) // ~2.3 µs
+    for (let i = 0;    i < half - gap;          i++) samples[base + i] = LEVEL_SYNC_TIP
+    for (let i = half; i < LINE_SAMPLES - gap;  i++) samples[base + i] = LEVEL_SYNC_TIP
     return
   }
   for (let i = SYNC_START; i < SYNC_END; i++) samples[base + i] = LEVEL_SYNC_TIP
@@ -198,7 +164,6 @@ function writeBurst(samples, base, vSign) {
   const uCoef = -RT_HALF * BURST_PEAK
   const vCoef = vSign * RT_HALF * BURST_PEAK
   for (let i = BURST_START; i < BURST_END; i++) {
-    // Absolute-sample phase indexing = continuous subcarrier.
     const p = (base + i) & 3
     samples[base + i] = uCoef * SIN_TAB[p] + vCoef * COS_TAB[p]
   }
@@ -212,25 +177,17 @@ function writeActiveLine(samples, base, rgb, width, picY, vSign, chromaPhaseErro
     const x = Math.min(width - 1, Math.floor((i * width) / active))
     const o = (picY * width + x) * 3
     const [y, u, v] = rgbToYuv(rgb[o], rgb[o + 1], rgb[o + 2])
-
-    // Absolute-sample phase indexing = continuous subcarrier.
     const abs = base + ACTIVE_START + i
     const p = abs & 3
-    // Subcarrier basis rotated by chromaPhaseError (sin' = sin·cosE +
-    // cos·sinE; cos' = cos·cosE - sin·sinE). When chromaPhaseError is 0
-    // this reduces to the plain SIN/COS tables.
     const sinN = SIN_TAB[p]
     const cosN = COS_TAB[p]
     const sinR = sinN * cosE + cosN * sinE
     const cosR = cosN * cosE - sinN * sinE
     const sc = u * sinR + vSign * v * cosR
-
     samples[abs] = lumaToIreLocal(y) + sc
   }
 }
 
-// Inline to avoid a function call per sample in the hot loop. Equivalent
-// to lumaToIre(y) in signal.js.
 function lumaToIreLocal(y) {
   return LEVEL_BLACK + (LEVEL_WHITE - LEVEL_BLACK) * y
 }
