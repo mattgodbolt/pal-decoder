@@ -48,8 +48,8 @@ async function run() {
   const driftLabel     = document.getElementById('drift-label')
   const startOffSlider = document.getElementById('start-offset')
   const startOffLabel  = document.getElementById('start-offset-label')
-  const vsyncSlider    = document.getElementById('vsync-offset')
-  const vsyncLabel     = document.getElementById('vsync-offset-label')
+  const settleSlider   = document.getElementById('settle-frames')
+  const settleLabel    = document.getElementById('settle-frames-label')
   const lineSlider     = document.getElementById('line')
   const lineLabel      = document.getElementById('line-label')
 
@@ -92,7 +92,7 @@ async function run() {
     const driftSmp   = Number(driftSlider.value) / 10
     // start offset slider is 0..1000 → fraction of a full 625-line frame
     const startSample = Math.floor(Number(startOffSlider.value) / 1000 * SAMPLES_PER_FRAME)
-    const vsyncLineOffset = Number(vsyncSlider.value)
+    const framesToSettle = Number(settleSlider.value)
 
     phaseLabel .textContent = `${phaseDeg}°`
     bwLabel    .textContent = bwMhz >= 18 ? 'off' : `${bwMhz} MHz`
@@ -102,8 +102,8 @@ async function run() {
     driftLabel .textContent = driftSmp === 0 ? 'off' : `±${driftSmp.toFixed(1)} smp`
     startOffLabel.textContent = startSample === 0 ? '0' :
       `${(startSample / SAMPLES_PER_FRAME).toFixed(2)} frames`
-    vsyncLabel .textContent = vsyncLineOffset === 0 ? '0'
-      : `${vsyncLineOffset > 0 ? '+' : ''}${vsyncLineOffset} lines`
+    settleLabel.textContent = framesToSettle === 0 ? 'frame 1 (cold)'
+      : `frame ${framesToSettle + 1}`
 
     // Own path.
     const src = (PATTERNS[patternKey] ?? PATTERNS.bars75)()
@@ -119,7 +119,7 @@ async function run() {
     // a full frame from (otherwise mid-frame offsets run off the end).
     ownSamples = tileForLength(path, startSample + 2 * SAMPLES_PER_FRAME)
     const ownDecoded = decodeComposite(ownSamples, W, H,
-      { mode, startSample, vsyncLineOffset })
+      { mode, startSample, framesToSettle })
     renderPair('own-src', 'own-out', src, ownDecoded)
     document.getElementById('own-psnr-all').textContent =
       `${psnrDb(src, ownDecoded).toFixed(2)} dB`
@@ -130,7 +130,7 @@ async function run() {
     if (hacktvSamples) {
       const tiled = tileForLength(hacktvSamples, startSample + 2 * SAMPLES_PER_FRAME)
       const decoded = decodeComposite(tiled, W, H,
-        { mode, startSample, vsyncLineOffset })
+        { mode, startSample, framesToSettle })
       renderPair(null, 'hacktv-out', null, decoded)
     }
 
@@ -152,7 +152,7 @@ async function run() {
   jitterSlider  .addEventListener('input',  render)
   driftSlider   .addEventListener('input',  render)
   startOffSlider.addEventListener('input',  render)
-  vsyncSlider   .addEventListener('input',  render)
+  settleSlider  .addEventListener('input',  render)
   lineSlider    .addEventListener('input',  render)
 }
 

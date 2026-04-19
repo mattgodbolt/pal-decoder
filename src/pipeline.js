@@ -56,11 +56,15 @@ const DECODERS = {
  *                   cross-luminance dot crawl at sharp transitions).
  *        Default: 'pald'.
  * @param {number} [opts.startSample]      skip the first N samples of
- *        the input before decoding. Use to land mid-frame and exercise
- *        the vsync detector on different starting points.
- * @param {number} [opts.vsyncLineOffset]  add N full lines to the
- *        detected line-1 position. Simulates a CRT's vertical-hold
- *        mis-lock: picture rolls up/down.
+ *        the input before anything else — useful for landing the
+ *        simulated TV at different points in the capture.
+ * @param {number} [opts.framesToSettle]   run the horizontal PLL
+ *        through this many *additional* frames of signal *before*
+ *        decoding. The same PLL instance tracks all of them; we keep
+ *        only the last frame's tracked line positions and decode that.
+ *        `framesToSettle = 0` (default) decodes the first frame the
+ *        PLL sees. Values > 0 let you "peek" further into the
+ *        simulated TV's sync-acquisition state.
  * @returns {Float32Array}
  */
 export function decodeComposite(samples, width, height, opts = {}) {
@@ -68,24 +72,26 @@ export function decodeComposite(samples, width, height, opts = {}) {
   const decodeFrame = DECODERS[mode]
   if (!decodeFrame) throw new Error(`unknown decoder mode: ${mode}`)
 
-  // Optionally start decoding mid-signal. subarray is a zero-copy view.
   const startSample = Math.max(0, Math.floor(opts.startSample ?? 0))
+  const framesToSettle = Math.max(0, Math.floor(opts.framesToSettle ?? 0))
   const input = startSample > 0 ? samples.subarray(startSample) : samples
 
   const edges = findSyncEdges(input)
-
-  // Vertical sync.
   const detectedLineOne = findLineOneSample(input) ?? 0
-  const vsyncLineOffset = opts.vsyncLineOffset ?? 0
-  const lineOneSample = detectedLineOne + vsyncLineOffset * LINE_SAMPLES
 
+  // Single PLL instance — fed continuously through (framesToSettle + 1)
+  // frames of edges. Its state (period, phase) is whatever the tracker
+  // has learned after that many frames of tracking.
   const pll = new HorizontalPLL({
     period: LINE_SAMPLES,
-    position: lineOneSample + SYNC_START - 0.5,
+    position: detectedLineOne + SYNC_START - 0.5,
   })
-  const tracked = trackLines(edges, LINES_PER_FRAME, { pll })
+  const totalLines = (framesToSettle + 1) * LINES_PER_FRAME
+  const trackedAll = trackLines(edges, totalLines, { pll })
 
-  const lines = buildLineMetadata(input, tracked)
+  // Decode the last frame of tracked positions.
+  const trackedLast = trackedAll.slice(framesToSettle * LINES_PER_FRAME)
+  const lines = buildLineMetadata(input, trackedLast)
   return decodeFrame(input, lines, width, height)
 }
 
