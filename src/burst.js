@@ -1,9 +1,8 @@
 // Colour-burst measurement. Given the sample index of a line start, read
-// the burst window and extract its U and V components.
-//
-// Convention (matches the encoder): phase reference is the line-start
-// sample; subcarrier samples at 4×Fsc follow sin_tab=[0,1,0,-1] and
-// cos_tab=[1,0,-1,0], indexed by (sampleOffsetFromLineStart & 3).
+// the burst window and project onto the absolute-sample subcarrier basis.
+// At 4×Fsc the subcarrier is continuous across the whole signal with
+// phase n·π/2 at absolute sample n, so we index sin/cos tables by the
+// absolute sample index, not anything line-relative.
 //
 // Returns:
 //   uComponent   U-axis projection of the burst (sin basis)
@@ -20,10 +19,10 @@ const SIN_TAB = [0, 1, 0, -1]
 const COS_TAB = [1, 0, -1, 0]
 
 /**
- * @param {Float32Array} samples      full composite signal
- * @param {number} lineStart          integer sample index of this line's start
- * @param {number} burstStart         offset within line where burst begins
- * @param {number} burstEnd           offset within line where burst ends
+ * @param {Float32Array} samples     full composite signal
+ * @param {number} lineStart         integer sample index of this line's start
+ * @param {number} burstStart        offset within line where burst begins
+ * @param {number} burstEnd          offset within line where burst ends
  * @returns {{
  *   uComponent: number, vComponent: number,
  *   amplitude: number, vSign: 1|-1, phase: number,
@@ -33,9 +32,9 @@ export function measureBurst(samples, lineStart, burstStart, burstEnd) {
   let uSum = 0, vSum = 0
   const n = burstEnd - burstStart
   for (let k = 0; k < n; k++) {
-    const offset = burstStart + k
-    const p = offset & 3
-    const s = samples[lineStart + offset]
+    const abs = lineStart + burstStart + k
+    const p = abs & 3
+    const s = samples[abs]
     uSum += s * SIN_TAB[p]
     vSum += s * COS_TAB[p]
   }
@@ -47,6 +46,9 @@ export function measureBurst(samples, lineStart, burstStart, burstEnd) {
     uComponent: u,
     vComponent: v,
     amplitude: Math.sqrt(u * u + v * v),
+    // vSign by sign of V alone isn't meaningful on a rotated subcarrier;
+    // callers determine the PAL switch state from burst-alternation
+    // across lines. Reported here only for diagnostics.
     vSign: v >= 0 ? +1 : -1,
     phase: Math.atan2(v, u),
   }

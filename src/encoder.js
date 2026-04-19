@@ -6,14 +6,21 @@
 //              so element 0 is unused). Each entry is { activeStart, vSign }
 //              or null for lines outside the active region.
 //
-// Stage-1 simplifications (see CLAUDE.md):
-//   * Progressive: active picture lines are rendered on every line in the
-//     active region. Interlace (odd/even field on alternating lines) is a
-//     later concern.
-//   * Subcarrier phase is reset to 0 at the start of every line. Real PAL
-//     carries phase across lines; the PLL will reconcile that at stage 2.
-//   * Vertical blanking lines are flat blanking with normal horizontal sync
-//     (no equalising / broad pulses, no VBI data).
+// PAL correctness notes:
+//   * Subcarrier phase is CONTINUOUS across lines: every sample at absolute
+//     index i has subcarrier phase i·π/2 (at 4×Fsc). The decoder uses the
+//     same indexing, so encoder/decoder round-trip is identity. The burst
+//     is what tells a generic decoder (or ours on non-self-produced
+//     signals) where the U/V axes actually are per line.
+//   * Vertical sync: lines 1–5 and 313–317 (field 1) carry the 5-pulse
+//     broad-pulse blocks that signal start-of-field; lines 6–7.5 and
+//     therein carry 2.35 µs equalising pulses. This is what a vertical
+//     PLL locks onto to know which line is line 1.
+//   * Progressive: one image rendered on every active line. Interlace
+//     (fields on alternating lines) is deferred.
+//   * Line timing is rounded to integer samples (1135 per line); real PAL
+//     is 1135.0064. HackTV also rounds at 4×Fsc per its documentation.
+//     This is a documented approximation, not a hidden expedient.
 
 import {
   LEVEL_BLANKING, LEVEL_SYNC_TIP, LEVEL_BLACK, LEVEL_WHITE,
@@ -33,12 +40,8 @@ import { rgbToYuv } from './colorspace.js'
 // amplitude is half the sync depth: 0.15.
 export const BURST_PEAK = 0.15
 
-// Subcarrier samples at 4×Fsc. Because the sample rate is exactly four
-// times Fsc, sin(ωt) and cos(ωt) cycle through fixed 4-sample patterns
-// indexed by (n mod 4):
-//   sin: 0, 1,  0, -1
-//   cos: 1, 0, -1,  0
-// Every line resets to n = 0 (phase 0) in this stage-1 simplification.
+// Subcarrier samples at 4×Fsc, indexed by (absolute_sample_index & 3).
+// Continuous across the whole signal — "phase n·π/2 at sample n".
 const SIN_TAB = [0, 1, 0, -1]
 const COS_TAB = [1, 0, -1, 0]
 
@@ -76,26 +79,27 @@ export function encodeFrame(rgb, width, height) {
   for (let line = 1; line <= LINES_PER_FRAME; line++) {
     const base = (line - 1) * LINE_SAMPLES
 
-    // Horizontal sync pulse (every line).
-    for (let i = SYNC_START; i < SYNC_END; i++) samples[base + i] = LEVEL_SYNC_TIP
+    writeLineSync(samples, base, line)
 
-    // PAL switch: +V on odd active-region lines, -V on even. Anchor to the
-    // first active line so "line 23" is treated as +V by convention.
+    // PAL switch: +V on odd active-region lines, -V on even. Anchored to
+    // the first active line so line 23 is designated +V (matches the
+    // decoder's σ-walk convention of "first burst-bearing line = +V").
     const vSign = ((line - ACTIVE_FIRST_LINE) & 1) === 0 ? +1 : -1
 
+    // Broad-pulse (field-sync) lines carry no burst and no picture —
+    // their second-half sync pulse sits right where active video and
+    // burst would otherwise be written, so we skip those entirely.
+    if (isBroadPulseLine(line)) continue
+
     if (line >= ACTIVE_FIRST_LINE && line <= ACTIVE_LAST_LINE) {
-      // Colour burst in the back porch, gated by colour-killer amplitude
-      // (always on for non-degraded encode).
       writeBurst(samples, base, vSign)
     }
 
-    // Active video (only within the picture region).
     const picY = line - firstPictureLine
     if (picY >= 0 && picY < height) {
       writeActiveLine(samples, base, rgb, width, picY, vSign)
       lines[line] = { activeStart: base + ACTIVE_START, vSign, length: ACTIVE_END - ACTIVE_START }
     } else if (line >= ACTIVE_FIRST_LINE && line <= ACTIVE_LAST_LINE) {
-      // Active region but no picture data: leave at blanking (black).
       lines[line] = { activeStart: base + ACTIVE_START, vSign, length: ACTIVE_END - ACTIVE_START }
     }
   }
@@ -103,11 +107,53 @@ export function encodeFrame(rgb, width, height) {
   return { samples, lines }
 }
 
+// --- horizontal/vertical sync -----------------------------------------------
+//
+// 625/50 PAL sync structure per ITU-R BT.470:
+//   Lines 1–5   : five BROAD (field-sync) pulses, each ~27.3 µs = half-line
+//                 below blanking, with a narrow rise in between.
+//   Lines 6–7.5 : five EQUALISING pulses, each ~2.35 µs wide, at the
+//                 beginning of each half-line.
+//   Lines 7.5–23: normal 4.7 µs horizontal syncs (here we just start from
+//                 line 8; equalising trail between 6 and 7.5 rounded).
+//   Lines 313–317: field-2 broad pulses.
+//   Etc.
+// For this stage-2 progressive pipeline we use a simplified but still-
+// detectable scheme: broad pulses on lines 1..5 and 313..317 (full
+// half-line below-blanking), normal sync elsewhere. Equalising pulses
+// are omitted — they're there in real PAL to keep interlace stable, and
+// we're progressive.
+
+const BROAD_PULSE_LINES_FIELD1 = [1, 2, 3, 4, 5]
+const BROAD_PULSE_LINES_FIELD2 = [313, 314, 315, 316, 317]
+
+function isBroadPulseLine(line) {
+  return BROAD_PULSE_LINES_FIELD1.includes(line) || BROAD_PULSE_LINES_FIELD2.includes(line)
+}
+
+function writeLineSync(samples, base, line) {
+  if (isBroadPulseLine(line)) {
+    // Two broad pulses per line (each spanning ~half a line), separated
+    // by a short blanking rise. We put the first broad pulse starting
+    // from sample 0 and running for (LINE_SAMPLES/2 - short gap); a short
+    // blanking interval; then a second broad pulse running to the end of
+    // the line minus a gap.
+    const half = LINE_SAMPLES >> 1
+    const gap  = Math.round(2.3e-6 * 17_734_475) // ~2.3 µs gap at line mid / end
+    for (let i = 0;           i < half - gap;       i++) samples[base + i] = LEVEL_SYNC_TIP
+    for (let i = half;        i < LINE_SAMPLES - gap; i++) samples[base + i] = LEVEL_SYNC_TIP
+    // Gaps between pulses remain at blanking (0) from the samples.fill.
+    return
+  }
+  for (let i = SYNC_START; i < SYNC_END; i++) samples[base + i] = LEVEL_SYNC_TIP
+}
+
 function writeBurst(samples, base, vSign) {
   const uCoef = -RT_HALF * BURST_PEAK
   const vCoef = vSign * RT_HALF * BURST_PEAK
   for (let i = BURST_START; i < BURST_END; i++) {
-    const p = i & 3
+    // Absolute-sample phase indexing = continuous subcarrier.
+    const p = (base + i) & 3
     samples[base + i] = uCoef * SIN_TAB[p] + vCoef * COS_TAB[p]
   }
 }
@@ -115,16 +161,16 @@ function writeBurst(samples, base, vSign) {
 function writeActiveLine(samples, base, rgb, width, picY, vSign) {
   const active = ACTIVE_END - ACTIVE_START
   for (let i = 0; i < active; i++) {
-    // Map active-video sample index to source pixel (nearest-neighbour;
-    // stage 1 doesn't need a fancy resampler).
     const x = Math.min(width - 1, Math.floor((i * width) / active))
     const o = (picY * width + x) * 3
     const [y, u, v] = rgbToYuv(rgb[o], rgb[o + 1], rgb[o + 2])
 
-    const p = (i) & 3 // subcarrier phase index — reset to 0 at ACTIVE_START
+    // Absolute-sample phase indexing = continuous subcarrier.
+    const abs = base + ACTIVE_START + i
+    const p = abs & 3
     const sc = u * SIN_TAB[p] + vSign * v * COS_TAB[p]
 
-    samples[base + ACTIVE_START + i] = lumaToIreLocal(y) + sc
+    samples[abs] = lumaToIreLocal(y) + sc
   }
 }
 

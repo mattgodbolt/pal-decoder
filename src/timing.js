@@ -41,10 +41,22 @@ export const ACTIVE_START  = SYNC_END + BACK_PORCH_SAMPLES
 export const ACTIVE_END    = ACTIVE_START + ACTIVE_SAMPLES
 export const LINE_SAMPLES  = ACTIVE_END
 
-// Frame layout: 625 lines per full frame. For stage 1 we treat the whole
-// 625 as a progressive frame and render active video into a configurable
-// subset of lines (e.g. lines 23..622 for a 600-line active region).
+// Frame layout: 625 lines per full frame.
+//
+// Lines 1–5   : field-1 broad pulses (vertical sync).
+// Lines 6–22  : upper blanking (no burst, no picture).
+// Lines 23–310: field-1 active picture region.
+// Lines 311–312: mid-frame blanking.
+// Lines 313–317: field-2 broad pulses.
+// Lines 318–335: lower blanking / field-2 preamble.
+// Lines 336–623: field-2 active picture region.
+// Lines 624–625: trailer blanking.
+//
+// For the stage-2 progressive pipeline we render pictures into field 1
+// only (288 lines max) so the output never crosses the field-2 broad-
+// pulse block. Proper interlaced rendering (both fields) is a stage-4
+// concern.
 export const LINES_PER_FIELD     = 312 // nominal; real PAL is 312.5 interlaced
-export const ACTIVE_FIRST_LINE   = 23  // 1-based; first line carrying picture
-export const ACTIVE_LAST_LINE    = 622 // 1-based
-export const ACTIVE_LINE_COUNT   = ACTIVE_LAST_LINE - ACTIVE_FIRST_LINE + 1 // 600
+export const ACTIVE_FIRST_LINE   = 23
+export const ACTIVE_LAST_LINE    = 310   // field 1 only, for progressive
+export const ACTIVE_LINE_COUNT   = ACTIVE_LAST_LINE - ACTIVE_FIRST_LINE + 1 // 288

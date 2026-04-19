@@ -12,19 +12,25 @@ const solid = (w, h, r, g, b) => {
   return out
 }
 
-test('sync edges recovered from a clean encoded frame', () => {
+test('narrow sync edges cover all non-VBI lines', () => {
   const w = 64, h = 64
   const { samples } = encodeFrame(solid(w, h, 0.5, 0.5, 0.5), w, h)
   const edges = findSyncEdges(samples)
 
-  // Expect one edge per line.
-  assert.equal(edges.length, LINES_PER_FRAME)
+  // 625 total lines minus 10 broad-pulse lines (1–5, 313–317) = 615
+  // narrow sync edges.
+  assert.equal(edges.length, 615)
 
-  // Each edge should land within a sub-sample of the expected position
-  // (line base + SYNC_START).
+  // First narrow edge is on line 6; each subsequent edge lands within a
+  // sub-sample of (line - 1)·LINE_SAMPLES + SYNC_START, skipping VBI.
+  const isBroad = (line) =>
+    (line >= 1 && line <= 5) || (line >= 313 && line <= 317)
+
+  let idx = 0
   for (let line = 1; line <= LINES_PER_FRAME; line++) {
+    if (isBroad(line)) continue
     const expected = (line - 1) * LINE_SAMPLES + SYNC_START
-    const got = edges[line - 1]
+    const got = edges[idx++]
     assert.ok(Math.abs(got - expected) < 1.0,
       `line ${line}: edge ${got}, expected ${expected}`)
   }

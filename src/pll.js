@@ -79,9 +79,12 @@ export class HorizontalPLL {
  */
 export function acquirePLL(edges, opts = {}) {
   if (edges.length < 2) throw new Error('need at least 2 edges to acquire')
+  // Use the median of ALL inter-edge diffs. PAL's vertical-sync lines
+  // contain both line-start and mid-line broad pulses — using only the
+  // first few diffs would lock onto half-line spacing. Over a full
+  // frame, the full-line spacing dominates.
   const diffs = []
-  const maxDiffs = Math.min(edges.length - 1, 20)
-  for (let i = 1; i <= maxDiffs; i++) diffs.push(edges[i] - edges[i - 1])
+  for (let i = 1; i < edges.length; i++) diffs.push(edges[i] - edges[i - 1])
   diffs.sort((a, b) => a - b)
   const period = diffs[Math.floor(diffs.length / 2)]
   return new HorizontalPLL({ period, position: edges[0], ...opts })
@@ -92,9 +95,15 @@ export function acquirePLL(edges, opts = {}) {
  * line-start estimate per expected line. If the next edge is more than
  * one period-tolerance past the PLL's prediction, we treat that line as
  * missed (PLL free-runs) without consuming the edge.
+ *
+ * @param {number[]} edges
+ * @param {number} nLines
+ * @param {object} [opts]
+ * @param {HorizontalPLL} [opts.pll]  pre-initialised PLL; if omitted,
+ *                                    acquirePLL() is used.
  */
 export function trackLines(edges, nLines, opts = {}) {
-  const pll = acquirePLL(edges, opts)
+  const pll = opts.pll ?? acquirePLL(edges, opts)
   const results = []
   let ei = 0
   for (let line = 0; line < nLines; line++) {

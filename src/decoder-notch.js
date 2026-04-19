@@ -54,7 +54,12 @@ export function decodeFrame(samples, lines, width, height) {
 }
 
 function decodeLine(samples, meta, rgb, width, picY) {
-  const { activeStart, length, vSign } = meta
+  const { activeStart, length, vSign, phaseRotation = 0 } = meta
+  // Rotation from the line's natural (U, V) basis to our fixed (sin, cos)
+  // demodulation basis. cos/sin here are applied to (U_fixed, V_fixed) to
+  // recover (U_nat, σ·V_nat); σ is folded in at the end.
+  const cosA = Math.cos(phaseRotation)
+  const sinA = Math.sin(phaseRotation)
 
   // 1. Active signal with DC removed (black = 0).
   const sig = new Float32Array(length)
@@ -72,13 +77,12 @@ function decodeLine(samples, meta, rgb, width, picY) {
 
   // 4. Demodulate. 4-tap box filter = one subcarrier period = LPF with
   // zeros at Fsc and 2·Fsc. Factor of 2 undoes the sin²=½ demod gain,
-  // and we apply it once at the end: U = (sum of 4 taps) / 2.
+  // and we apply it once at the end: U = (sum of 4 taps) / 2. Phase
+  // index is absolute-sample (continuous subcarrier).
   const U = new Float32Array(length)
   const V = new Float32Array(length)
   for (let i = 0; i < length - 3; i++) {
-    // Unrolled over the 4 phases p = i%4 .. (i+3)%4. sin_tab=[0,1,0,-1],
-    // cos_tab=[1,0,-1,0] means only two of four taps contribute to each.
-    const p = i & 3
+    const p = (activeStart + i) & 3
     let uSum = 0, vSum = 0
     for (let k = 0; k < 4; k++) {
       const ph = (p + k) & 3
@@ -87,8 +91,15 @@ function decodeLine(samples, meta, rgb, width, picY) {
       uSum += C[i + k] * s
       vSum += C[i + k] * c
     }
-    U[i + 1] = 0.5 * uSum           // centre of the 4-tap window is i+1.5;
-    V[i + 1] = 0.5 * vSum * vSign   // round to i+1 (consistent phase).
+    // Fixed-frame demodulation: U·sin + σV·cos projected onto (sin, cos).
+    const uFixed = 0.5 * uSum
+    const vFixed = 0.5 * vSum
+    // Rotate back to the line's natural frame. For our own encoder
+    // phaseRotation is 0 (cosA=1, sinA=0) so this collapses to identity.
+    const uNat = uFixed * cosA + vFixed * sinA
+    const vNatSigned = -uFixed * sinA + vFixed * cosA
+    U[i + 1] = uNat
+    V[i + 1] = vNatSigned * vSign   // fold PAL switch back out.
   }
 
   // 5. YUV → RGB per output pixel, nearest-neighbour from active samples.

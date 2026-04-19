@@ -8,9 +8,10 @@ import { encodeFrame } from '../src/encoder.js'
 import { decodeComposite, buildLineMetadata } from '../src/pipeline.js'
 import { decodeFrame } from '../src/decoder-notch.js'
 import { findSyncEdges } from '../src/sync.js'
-import { trackLines } from '../src/pll.js'
+import { HorizontalPLL, trackLines } from '../src/pll.js'
+import { findLineOneSample } from '../src/vsync.js'
 import { colourBars75 } from '../src/fixtures/bars.js'
-import { ACTIVE_FIRST_LINE } from '../src/timing.js'
+import { ACTIVE_FIRST_LINE, LINE_SAMPLES, SYNC_START } from '../src/timing.js'
 
 function psnrDb(a, b, { width, height, marginX = 0 }) {
   let s = 0, n = 0
@@ -38,7 +39,15 @@ test('buildLineMetadata recovers vSign matching the encoder', () => {
   const w = 32, h = 32
   const { samples, lines: truth } = encodeFrame(colourBars75(w, h), w, h)
   const edges = findSyncEdges(samples)
-  const tracked = trackLines(edges, truth.length - 1)
+  // Seed the PLL at the line-1 sample found by vertical-sync, as the
+  // real pipeline does — otherwise tracked[] is offset by the VBI lines
+  // the horizontal PLL has no edges for.
+  const lineOne = findLineOneSample(samples) ?? 0
+  const pll = new HorizontalPLL({
+    period: LINE_SAMPLES,
+    position: lineOne + SYNC_START - 0.5,
+  })
+  const tracked = trackLines(edges, truth.length - 1, { pll })
   const recovered = buildLineMetadata(samples, tracked)
 
   // For active-region lines carrying a burst, vSign must match truth.

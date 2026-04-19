@@ -28,6 +28,6 @@ test('line is close to the canonical 64 µs (1135 samples at 4×Fsc)', () => {
   assert.ok(Math.abs(LINE_SAMPLES - 1135) <= 4, `line = ${LINE_SAMPLES}`)
 })
 
-test('active line count is 600 (23..622 inclusive)', () => {
-  assert.equal(ACTIVE_LINE_COUNT, 600)
+test('active line count is 288 (field 1 only, progressive)', () => {
+  assert.equal(ACTIVE_LINE_COUNT, 288)
 })
