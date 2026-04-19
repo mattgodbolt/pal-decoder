@@ -1,11 +1,14 @@
-// 75% EBU colour-bars fixture.
+// 75% colour-bars fixture, all bars at 75% amplitude (SMPTE convention:
+// "75/0/75/0" — white, colour bars, and the outer grey at 75%). This
+// yields a smaller peak composite level (~0.525 V flat white) than the
+// EBU "100/0/75/0" convention that HackTV's `test:colourbars` uses,
+// where the white bar is at full 100%. Both are valid; this one gives
+// more headroom in intermediate arithmetic and makes bar-level equality
+// exact for all eight bars.
 //
 // Eight vertical bars, left-to-right: white, yellow, cyan, green, magenta,
-// red, blue, black. The six colour bars are at 75% amplitude (hence "75%"):
-// R, G, B components are either 0 or 0.75. White and black are 1.0 and 0.0.
-//
-// Returned image is a flat Float32Array of length width*height*3, layout RGB
-// row-major, top-to-bottom. Values are in [0, 1].
+// red, blue, black. Returned image is a flat Float32Array of length
+// width*height*3, layout RGB row-major, top-to-bottom, values in [0, 1].
 
 const BARS_75 = [
   [0.75, 0.75, 0.75], // white (75% grey, EBU convention)
