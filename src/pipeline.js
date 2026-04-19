@@ -1,165 +1,42 @@
-// End-to-end decode pipeline: composite samples -> RGB image.
+// One-shot convenience wrapper around the stateful PalDecoder. For
+// long-running / streaming use (jsbeeb, Miracle, the <pal-decoder>
+// element), instantiate PalDecoder directly and feed it frames.
 //
-// Real PAL decoders lock onto the colour burst on *every* line and use
-// its phase as the chroma demodulation reference, because the subcarrier
-// is continuous across lines and the burst is the per-line calibration
-// signal that tells you where the U/V axes actually are. We do the same
-// thing: the decoder demodulates in a fixed reference frame, then rotates
-// into each line's natural (U, V) frame using the burst-measured phase.
-//
-// The PAL switch flips V on every line. Real signals use an 8-field
-// sequence to tell you which is which; since we don't recover vertical
-// sync yet, `firstVSign` lets the caller try both orderings — for our
-// own encoder +1 is correct.
+// Re-exports buildLineMetadata so existing tests can still reach it.
 
-import { findSyncEdges } from './sync.js'
-import { HorizontalPLL, trackLines } from './pll.js'
-import { findLineOneSample } from './vsync.js'
-import { measureBurst } from './burst.js'
-import { decodeFrame as decodeFrameNotch } from './decoder-notch.js'
-import { decodeFrame as decodeFramePald }  from './decoder-pald.js'
-import { decodeFrame as decodeFrameComb }  from './decoder-comb.js'
-import { LINES_PER_FRAME } from './signal.js'
-import {
-  SYNC_START, BURST_START, BURST_END, ACTIVE_START, ACTIVE_END, LINE_SAMPLES,
-  FIELD1_ACTIVE_FIRST,
-} from './timing.js'
-import { BURST_PEAK } from './encoder.js'
+import { PalDecoder, buildLineMetadata } from './pal-decoder.js'
 
-// Colour-killer threshold: below this burst amplitude we treat the line
-// as monochrome and skip the burst-derived phase rotation.
-const COLOUR_KILLER = BURST_PEAK * 0.25
-
-// Burst angles in a line's natural frame. ±135° from the +U axis is the
-// PAL spec (it's what "swinging burst" means).
-const BURST_ANGLE_PLUS  = +3 * Math.PI / 4
-const BURST_ANGLE_MINUS = -3 * Math.PI / 4
-
-const DECODERS = {
-  notch: decodeFrameNotch,
-  pald:  decodeFramePald,
-  comb:  decodeFrameComb,
-}
+export { buildLineMetadata }
 
 /**
- * Decode a full PAL frame from raw composite samples.
+ * Decode a PAL frame from a composite-sample buffer. Creates a fresh
+ * PalDecoder, runs it through (framesToSettle + 1) frames so the
+ * horizontal PLL has settled that many frames in before we observe,
+ * and returns the last frame's RGB output.
+ *
+ * For a proper long-lived decoder keep a PalDecoder instance around
+ * and call decodeFrame() each time new samples are available.
  *
  * @param {Float32Array} samples
  * @param {number} width
  * @param {number} height
  * @param {object} [opts]
- * @param {'notch'|'pald'|'comb'} [opts.mode]  decoder to use.
- *        - `notch`: PAL-S, per-line notch + no chroma averaging.
- *        - `pald`:  PAL-D, notch separator + 1-H chroma averaging
- *                   (cancels phase-error Hanover bars).
- *        - `comb`:  comb separator + PAL-D averaging (also cancels
- *                   cross-luminance dot crawl at sharp transitions).
- *        Default: 'pald'.
- * @param {number} [opts.startSample]      skip the first N samples of
- *        the input before anything else — useful for landing the
- *        simulated TV at different points in the capture.
- * @param {number} [opts.framesToSettle]   run the horizontal PLL
- *        through this many *additional* frames of signal *before*
- *        decoding. The same PLL instance tracks all of them; we keep
- *        only the last frame's tracked line positions and decode that.
- *        `framesToSettle = 0` (default) decodes the first frame the
- *        PLL sees. Values > 0 let you "peek" further into the
- *        simulated TV's sync-acquisition state.
- * @returns {Float32Array}
+ * @param {'notch'|'pald'|'comb'} [opts.mode]
+ * @param {number} [opts.startSample]      skip the first N samples
+ * @param {number} [opts.framesToSettle]   run PLL this many extra
+ *        frames before observing (same state carries forward; state
+ *        after N frames is state N frames into the simulated TV's life)
  */
 export function decodeComposite(samples, width, height, opts = {}) {
   const mode = opts.mode ?? 'pald'
-  const decodeFrame = DECODERS[mode]
-  if (!decodeFrame) throw new Error(`unknown decoder mode: ${mode}`)
-
   const startSample = Math.max(0, Math.floor(opts.startSample ?? 0))
   const framesToSettle = Math.max(0, Math.floor(opts.framesToSettle ?? 0))
   const input = startSample > 0 ? samples.subarray(startSample) : samples
 
-  const edges = findSyncEdges(input)
-  const detectedLineOne = findLineOneSample(input) ?? 0
-
-  // Single PLL instance — fed continuously through (framesToSettle + 1)
-  // frames of edges. Its state (period, phase) is whatever the tracker
-  // has learned after that many frames of tracking.
-  const pll = new HorizontalPLL({
-    period: LINE_SAMPLES,
-    position: detectedLineOne + SYNC_START - 0.5,
-  })
-  const totalLines = (framesToSettle + 1) * LINES_PER_FRAME
-  const trackedAll = trackLines(edges, totalLines, { pll })
-
-  // Decode the last frame of tracked positions.
-  const trackedLast = trackedAll.slice(framesToSettle * LINES_PER_FRAME)
-  const lines = buildLineMetadata(input, trackedLast)
-  return decodeFrame(input, lines, width, height)
-}
-
-export function buildLineMetadata(samples, tracked) {
-  const lines = new Array(LINES_PER_FRAME + 1).fill(null)
-  const activeLen = ACTIVE_END - ACTIVE_START
-
-  // First pass: measure burst on every line that has one.
-  const rawBursts = new Array(LINES_PER_FRAME + 1).fill(null)
-  const lineStarts = new Array(LINES_PER_FRAME + 1).fill(null)
-  for (let line = 1; line <= LINES_PER_FRAME; line++) {
-    const t = tracked[line - 1]
-    if (!t) continue
-    // Fractional line start (no rounding). Real PAL's 1135.0064-samples/line
-    // drift means the true line position is sub-sample precise; rounding
-    // here would shift subcarrier-phase alignment between neighbouring
-    // lines by up to ±π/2.
-    const lineStart = t.position - SYNC_START + 0.5
-    if (lineStart < -1 || lineStart + ACTIVE_END > samples.length + 1) continue
-    lineStarts[line] = lineStart
-    const burst = measureBurst(samples, lineStart, BURST_START, BURST_END)
-    if (burst.amplitude > COLOUR_KILLER) rawBursts[line] = burst
+  const dec = new PalDecoder({ mode, width, height })
+  let rgb
+  for (let f = 0; f <= framesToSettle; f++) {
+    rgb = dec.decodeFrame(input)
   }
-
-  // Second pass: walk the σ sequence. The PAL switch flips V every line,
-  // so burst vectors on adjacent lines in the natural frame differ by
-  // 270° (or 90° — same direction, different sign convention). The
-  // measurement frame rotates continuously with the subcarrier (since
-  // our decoder uses absolute-phase indexing and line length isn't a
-  // multiple of the subcarrier period), so inter-line burst-phase diffs
-  // encode σ directly:
-  //   Δα per line (structural, from LINE_SAMPLES mod 4 = 3) = 3π/2 mod 2π
-  //   diff = -σ·270° + Δα  →  σ = -1  when diff ≈  +180°
-  //                          σ = +1  when diff ≈  0
-  // Convention: first burst-bearing line is +V.
-  let firstBurstLine = -1
-  for (let line = 1; line <= LINES_PER_FRAME; line++) {
-    if (rawBursts[line]) { firstBurstLine = line; break }
-  }
-
-  for (let line = 1; line <= LINES_PER_FRAME; line++) {
-    const lineStart = lineStarts[line]
-    if (lineStart === null) continue
-    const burst = rawBursts[line]
-
-    let vSign, phaseRotation
-    if (burst) {
-      // σ by alternation from firstBurstLine.
-      const parity = (line - firstBurstLine) & 1
-      vSign = parity === 0 ? +1 : -1
-      const ideal = vSign > 0 ? BURST_ANGLE_PLUS : BURST_ANGLE_MINUS
-      phaseRotation = burst.phase - ideal
-    } else {
-      // No burst (typically outside active region or dropped). Decoder
-      // skips chroma effectively since colour killer will have zeroed
-      // everything; vSign doesn't matter here.
-      vSign = +1
-      phaseRotation = 0
-    }
-
-    lines[line] = {
-      activeStart: lineStart + ACTIVE_START,
-      vSign,
-      length: activeLen,
-      phaseRotation,
-      burstAmplitude: burst ? burst.amplitude : 0,
-      burstPhase: burst ? burst.phase : 0,
-    }
-  }
-  return lines
+  return rgb
 }

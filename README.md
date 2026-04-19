@@ -79,12 +79,12 @@ disappear.
 | Stage | What | Status |
 |---|---|---|
 | 1 | JS encoder + PAL-S notch decoder, round-trip > 30 dB | ✅ |
-| 2 | CPU PLL (horizontal + vertical), burst-locked chroma | ✅ |
+| 2 | CPU PLL (horizontal + vertical), burst-locked chroma, stateful `PalDecoder` class | ✅ |
 | 3 | GLSL port of the notch decoder, tested against the JS oracle | pending |
 | 4 | PAL-D delay-line decoder, Hanover-bar cancellation | ✅ |
 | 4.5 | 2H comb-filter luma/chroma separator, dot-crawl cancellation | ✅ |
 | 5 | Degradation controls: noise, bandlimit, ringing, jitter, drift | ✅ |
-| 6 | `<pal-decoder>` custom element | pending |
+| 6 | `<pal-decoder>` custom element, sample-streaming API on top of PalDecoder | pending |
 | 7 | jsbeeb / Miracle integration | pending |
 
 ## Layout
@@ -105,7 +105,8 @@ src/
   decoder-notch.js PAL-S (notch separator, no chroma delay line)
   decoder-pald.js  PAL-D (notch separator + 1-H chroma delay line)
   decoder-comb.js  Comb (2H comb separator + 1-H chroma delay line)
-  pipeline.js      decodeComposite: end-to-end, self-calibrating
+  pal-decoder.js   PalDecoder class — stateful PLL across frames
+  pipeline.js      decodeComposite: one-shot convenience wrapper
   hacktv.js        int16 ↔ Float32 baseband conversion
   degrade.js       AWGN noise, band-limit FIR (more TBD)
   demo.js          browser entry point
