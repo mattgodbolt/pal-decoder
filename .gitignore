@@ -1,3 +1,5 @@
 node_modules/
 *.log
 .DS_Store
+# HackTV-generated fixtures (4 MB each; regenerable via `make fixtures`).
+fixtures/*.int16
