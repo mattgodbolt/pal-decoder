@@ -3,7 +3,7 @@
 // between encode and decode so we can see how the pipeline copes with
 // real-world imperfections.
 //
-// Current set: AWGN noise, band-limit, ringing, phase jitter.
+// Set: AWGN noise, band-limit, ringing, phase jitter, timing drift.
 
 import { SAMPLE_RATE_HZ } from './signal.js'
 
@@ -200,4 +200,29 @@ function interp(samples, x) {
   const i = Math.floor(x)
   const f = x - i
   return (1 - f) * samples[i] + f * samples[i + 1]
+}
+
+/**
+ * Add slow sinusoidal timing drift. Models a TBC or capstan wobble:
+ * the sample grid is effectively "breathing" at a low frequency, with
+ * peak displacement of `peakSamples` samples. The horizontal PLL
+ * should track this smoothly (no rolling), but line-to-line phase
+ * alignment wobbles if the drift is fast enough compared to the loop
+ * bandwidth — visible as chroma colour shift on coloured regions.
+ *
+ * @param {Float32Array} samples
+ * @param {number} peakSamples       peak displacement (samples; 1 ≈ mild)
+ * @param {number} [wobbleHz]        drift frequency (default 2 Hz)
+ * @param {number} [sampleRateHz]
+ */
+export function addTimingDrift(samples, peakSamples, wobbleHz = 2, sampleRateHz = SAMPLE_RATE_HZ) {
+  if (peakSamples <= 0) return samples
+  const N = samples.length
+  const out = new Float32Array(N)
+  const phaseStep = 2 * Math.PI * wobbleHz / sampleRateHz
+  for (let i = 0; i < N; i++) {
+    const offset = peakSamples * Math.sin(phaseStep * i)
+    out[i] = interp(samples, i + offset)
+  }
+  return out
 }

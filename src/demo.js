@@ -8,7 +8,7 @@ import { encodeFrame, progressive } from './encoder.js'
 import { decodeComposite } from './pipeline.js'
 import { colourBars75 } from './fixtures/bars.js'
 import { int16ToFloat32 } from './hacktv.js'
-import { bandlimit, addNoise, addRinging, addPhaseJitter } from './degrade.js'
+import { bandlimit, addNoise, addRinging, addPhaseJitter, addTimingDrift } from './degrade.js'
 import { floatRgbToImageData, psnrDb, psnrDbWithMargin } from './image.js'
 import {
   ACTIVE_FIRST_LINE, ACTIVE_LINE_COUNT, LINE_SAMPLES, ACTIVE_START, ACTIVE_END,
@@ -35,6 +35,8 @@ async function run() {
   const ringLabel    = document.getElementById('ringing-label')
   const jitterSlider = document.getElementById('jitter')
   const jitterLabel  = document.getElementById('jitter-label')
+  const driftSlider  = document.getElementById('drift')
+  const driftLabel   = document.getElementById('drift-label')
   const lineSlider   = document.getElementById('line')
   const lineLabel    = document.getElementById('line-label')
 
@@ -71,6 +73,7 @@ async function run() {
     const noiseLvl   = Number(noiseSlider.value) / 1000
     const ringDb     = Number(ringSlider.value) / 10
     const jitterSmp  = Number(jitterSlider.value) / 100
+    const driftSmp   = Number(driftSlider.value) / 10
     const waveSource = picked(sourceRadios) ?? 'own'
 
     phaseLabel.textContent  = `${phaseDeg}°`
@@ -78,15 +81,15 @@ async function run() {
     noiseLabel.textContent  = noiseLvl === 0 ? 'off' : noiseLvl.toFixed(3)
     ringLabel.textContent   = ringDb === 0 ? 'off' : `${ringDb.toFixed(1)} dB`
     jitterLabel.textContent = jitterSmp === 0 ? 'off' : `${jitterSmp.toFixed(2)} smp`
+    driftLabel.textContent  = driftSmp === 0 ? 'off' : `±${driftSmp.toFixed(1)} smp`
 
-    // Own encoder -> bandlimit -> ringing -> jitter -> noise -> decoder.
-    // Order roughly mirrors a real signal path: transmission (bandlimit),
-    // amplifier response (ringing), sync-separator clock jitter, and
-    // thermal noise at the receiver.
+    // Own encoder -> bandlimit -> ringing -> drift -> jitter -> noise
+    // -> decoder. Order roughly mirrors a real reception chain.
     const enc = encodeFrame(src, W, H, { chromaPhaseError: phaseDeg * Math.PI / 180 })
     let path = enc.samples
     if (bwMhz < 18) path = bandlimit(path, bwMhz * 1e6)
     if (ringDb > 0) path = addRinging(path, 4.43e6, 3, ringDb)
+    if (driftSmp > 0) path = addTimingDrift(path, driftSmp)
     if (jitterSmp > 0) path = addPhaseJitter(path, jitterSmp)
     if (noiseLvl > 0) path = addNoise(path, noiseLvl)
     ownSamples = path
@@ -119,6 +122,7 @@ async function run() {
   noiseSlider .addEventListener('input', render)
   ringSlider  .addEventListener('input', render)
   jitterSlider.addEventListener('input', render)
+  driftSlider .addEventListener('input', render)
   lineSlider  .addEventListener('input', render)
 }
 

@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { addNoise, bandlimit, addRinging, addPhaseJitter } from '../src/degrade.js'
+import { addNoise, bandlimit, addRinging, addPhaseJitter, addTimingDrift } from '../src/degrade.js'
 import { SAMPLE_RATE_HZ } from '../src/signal.js'
 
 // Seeded deterministic PRNG.
@@ -105,6 +105,32 @@ test('addRinging leaves DC untouched', () => {
   for (let i = 100; i < 900; i++) {
     assert.ok(Math.abs(y[i] - 0.4) < 1e-3, `i=${i} y=${y[i]}`)
   }
+})
+
+test('addTimingDrift leaves a DC signal unchanged (resampled DC is DC)', () => {
+  const x = new Float32Array(5000).fill(0.4)
+  const y = addTimingDrift(x, 3)
+  for (let i = 50; i < 4950; i++) {
+    assert.ok(Math.abs(y[i] - 0.4) < 1e-4, `i=${i} ${y[i]}`)
+  }
+})
+
+test('addTimingDrift shifts a high-frequency sinusoid visibly', () => {
+  // Use a wobble frequency high enough for the sinusoid to actually
+  // traverse a visible fraction of a wobble cycle within N samples.
+  // (At the demo default of 2 Hz the wobble period is ~8.85 M samples;
+  // over 20 k samples that's barely motion. Cranking to 500 Hz gives
+  // meaningful motion within a reasonable test-signal length.)
+  const N = 20000
+  const fIn = 4e6
+  const x = new Float32Array(N)
+  for (let i = 0; i < N; i++) x[i] = Math.sin(2 * Math.PI * fIn * i / SAMPLE_RATE_HZ)
+  const y = addTimingDrift(x, 2, 500)
+  let maxAbsDelta = 0
+  for (let i = 100; i < N - 100; i++) {
+    maxAbsDelta = Math.max(maxAbsDelta, Math.abs(y[i] - x[i]))
+  }
+  assert.ok(maxAbsDelta > 1.0, `expected noticeable displacement, got ${maxAbsDelta.toFixed(3)}`)
 })
 
 test('addPhaseJitter preserves signal statistics but adds variance at detail', () => {
