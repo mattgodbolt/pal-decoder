@@ -1,8 +1,8 @@
 // Browser entry point. Encodes 75% colour bars through our own pipeline
 // (round-trip check) AND decodes an external HackTV PAL baseband
-// capture (cross-check against a third-party encoder), so we can eyeball
-// both side by side. One composite line from each is rendered as a
-// scrollable waveform.
+// capture (cross-check against a third-party encoder). A decoder-mode
+// toggle (PAL-S vs PAL-D) and a chroma phase-error slider let you see
+// Hanover bars appear under PAL-S and disappear under PAL-D.
 
 import { encodeFrame } from './encoder.js'
 import { decodeComposite } from './pipeline.js'
@@ -14,75 +14,84 @@ import {
 } from './timing.js'
 import { LINES_PER_FRAME, LEVEL_SYNC_TIP, LEVEL_BLANKING, LEVEL_WHITE } from './signal.js'
 
-// Stage-2 progressive is field-1-only: 288 lines.
+// Stage-2 progressive = field-1 only, 288 lines.
 const W = 720, H = 288
 
 async function run() {
   const src = colourBars75(W, H)
-  const { samples: ownSamples } = encodeFrame(src, W, H)
-  const ownDecoded = decodeComposite(ownSamples, W, H)
 
-  renderPair({
-    srcId: 'own-src',
-    outId: 'own-out',
-    src, decoded: ownDecoded,
-  })
-  document.getElementById('own-psnr-all').textContent =
-    `${psnrDb(src, ownDecoded).toFixed(2)} dB`
-  document.getElementById('own-psnr-body').textContent =
-    `${psnrDbWithMargin(src, ownDecoded, W, H, 8).toFixed(2)} dB`
+  const modeRadios   = document.getElementsByName('decode-mode')
+  const sourceRadios = document.getElementsByName('wave-source')
+  const phaseSlider  = document.getElementById('phase-error')
+  const phaseLabel   = document.getElementById('phase-error-label')
+  const lineSlider   = document.getElementById('line')
+  const lineLabel    = document.getElementById('line-label')
 
-  // HackTV fixture — a separate third-party encoder's idea of "PAL
-  // 75% colour bars". Only fetch if the fixture is present; a 404 is
-  // not fatal.
+  const firstPictureLine = ACTIVE_FIRST_LINE + Math.floor((ACTIVE_LINE_COUNT - H) / 2)
+  lineSlider.min = 1
+  lineSlider.max = LINES_PER_FRAME
+  lineSlider.value = firstPictureLine + Math.floor(H / 2)
+
+  // Pre-fetch hacktv fixture once (it doesn't depend on mode or phase).
   let hacktvSamples = null
   try {
     const resp = await fetch('fixtures/hacktv-bars.int16', { cache: 'no-store' })
     if (resp.ok) {
-      const ab = await resp.arrayBuffer()
-      hacktvSamples = int16ToFloat32(ab)
-      const decoded = decodeComposite(hacktvSamples, W, H)
-      renderPair({
-        srcId: null, outId: 'hacktv-out',
-        src: null, decoded,
-      })
+      hacktvSamples = int16ToFloat32(await resp.arrayBuffer())
       document.getElementById('hacktv-status').textContent =
-        `decoded ${(ab.byteLength / 1024 / 1024).toFixed(2)} MB capture (${hacktvSamples.length} samples)`
+        `decoded ${(hacktvSamples.length * 2 / 1024 / 1024).toFixed(2)} MB capture`
     } else {
       document.getElementById('hacktv-status').textContent =
-        `no fixture (run \`make fixtures\` to generate)`
+        'no fixture (run `make fixtures` to generate)'
     }
   } catch (e) {
     document.getElementById('hacktv-status').textContent = `fetch failed: ${e.message}`
   }
 
-  // Waveform scrubber — shows our own encoder's signal, or hacktv's if
-  // the radio button is flipped.
-  const firstPictureLine = ACTIVE_FIRST_LINE + Math.floor((ACTIVE_LINE_COUNT - H) / 2)
-  const defaultLine = firstPictureLine + Math.floor(H / 2)
+  const picked = (radios) => [...radios].find((r) => r.checked)?.value
 
-  const slider = document.getElementById('line')
-  const label  = document.getElementById('line-label')
-  const sourceRadios = document.getElementsByName('wave-source')
-  slider.min = 1
-  slider.max = LINES_PER_FRAME
-  slider.value = defaultLine
+  // Holds the most recent "own" samples so the waveform view can show them.
+  let ownSamples = null
 
-  const currentSamples = () => {
-    const chosen = [...sourceRadios].find((r) => r.checked)?.value ?? 'own'
-    return chosen === 'hacktv' && hacktvSamples ? hacktvSamples : ownSamples
-  }
   const render = () => {
-    const n = Number(slider.value)
-    label.textContent = describeLine(n, firstPictureLine)
-    drawWaveform(currentSamples(), n)
+    const mode       = picked(modeRadios)   ?? 'pald'
+    const phaseDeg   = Number(phaseSlider.value)
+    const waveSource = picked(sourceRadios) ?? 'own'
+
+    phaseLabel.textContent = `${phaseDeg}°`
+
+    // Own encoder -> decoder.
+    const enc = encodeFrame(src, W, H, { chromaPhaseError: phaseDeg * Math.PI / 180 })
+    ownSamples = enc.samples
+    const ownDecoded = decodeComposite(ownSamples, W, H, { mode })
+    renderPair('own-src', 'own-out', src, ownDecoded)
+    document.getElementById('own-psnr-all').textContent =
+      `${psnrDb(src, ownDecoded).toFixed(2)} dB`
+    document.getElementById('own-psnr-body').textContent =
+      `${psnrDbWithMargin(src, ownDecoded, W, H, 8).toFixed(2)} dB`
+
+    // HackTV (if available) — re-decodes when mode changes; phase slider
+    // doesn't affect it (the capture is already fixed).
+    if (hacktvSamples) {
+      const decoded = decodeComposite(hacktvSamples, W, H, { mode })
+      renderPair(null, 'hacktv-out', null, decoded)
+    }
+
+    // Waveform.
+    const samples = waveSource === 'hacktv' && hacktvSamples ? hacktvSamples : ownSamples
+    const n = Number(lineSlider.value)
+    lineLabel.textContent = describeLine(n, firstPictureLine)
+    drawWaveform(samples, n)
   }
-  slider.addEventListener('input', render)
-  for (const r of sourceRadios) r.addEventListener('change', render)
+
   render()
+  for (const r of modeRadios)   r.addEventListener('change', render)
+  for (const r of sourceRadios) r.addEventListener('change', render)
+  phaseSlider.addEventListener('input', render)
+  lineSlider .addEventListener('input', render)
 }
 
-function renderPair({ srcId, outId, src, decoded }) {
+function renderPair(srcId, outId, src, decoded) {
   if (srcId && src) {
     const c = document.getElementById(srcId)
     c.width = W; c.height = H

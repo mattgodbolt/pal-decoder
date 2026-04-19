@@ -59,13 +59,19 @@ const RT_HALF = Math.SQRT1_2 // 1/√2
  * @param {number} height       must be <= ACTIVE_LINE_COUNT (600)
  * @returns {{ samples: Float32Array, lines: Array }}
  */
-export function encodeFrame(rgb, width, height) {
+export function encodeFrame(rgb, width, height, opts = {}) {
   if (height > ACTIVE_LINE_COUNT) {
     throw new Error(`height ${height} exceeds active region ${ACTIVE_LINE_COUNT}`)
   }
   if (rgb.length !== width * height * 3) {
     throw new Error(`rgb length ${rgb.length} != ${width * height * 3}`)
   }
+  // `chromaPhaseError` shifts the subcarrier phase used for active-video
+  // modulation but NOT the burst. This simulates a transmission-path
+  // phase error that the decoder can't see via burst calibration — the
+  // classic set-up for observing Hanover bars on PAL-S and their
+  // disappearance on PAL-D.
+  const chromaPhaseError = opts.chromaPhaseError ?? 0
 
   const totalSamples = LINES_PER_FRAME * LINE_SAMPLES
   const samples = new Float32Array(totalSamples)
@@ -97,7 +103,7 @@ export function encodeFrame(rgb, width, height) {
 
     const picY = line - firstPictureLine
     if (picY >= 0 && picY < height) {
-      writeActiveLine(samples, base, rgb, width, picY, vSign)
+      writeActiveLine(samples, base, rgb, width, picY, vSign, chromaPhaseError)
       lines[line] = { activeStart: base + ACTIVE_START, vSign, length: ACTIVE_END - ACTIVE_START }
     } else if (line >= ACTIVE_FIRST_LINE && line <= ACTIVE_LAST_LINE) {
       lines[line] = { activeStart: base + ACTIVE_START, vSign, length: ACTIVE_END - ACTIVE_START }
@@ -158,8 +164,10 @@ function writeBurst(samples, base, vSign) {
   }
 }
 
-function writeActiveLine(samples, base, rgb, width, picY, vSign) {
+function writeActiveLine(samples, base, rgb, width, picY, vSign, chromaPhaseError) {
   const active = ACTIVE_END - ACTIVE_START
+  const cosE = Math.cos(chromaPhaseError)
+  const sinE = Math.sin(chromaPhaseError)
   for (let i = 0; i < active; i++) {
     const x = Math.min(width - 1, Math.floor((i * width) / active))
     const o = (picY * width + x) * 3
@@ -168,7 +176,14 @@ function writeActiveLine(samples, base, rgb, width, picY, vSign) {
     // Absolute-sample phase indexing = continuous subcarrier.
     const abs = base + ACTIVE_START + i
     const p = abs & 3
-    const sc = u * SIN_TAB[p] + vSign * v * COS_TAB[p]
+    // Subcarrier basis rotated by chromaPhaseError (sin' = sin·cosE +
+    // cos·sinE; cos' = cos·cosE - sin·sinE). When chromaPhaseError is 0
+    // this reduces to the plain SIN/COS tables.
+    const sinN = SIN_TAB[p]
+    const cosN = COS_TAB[p]
+    const sinR = sinN * cosE + cosN * sinE
+    const cosR = cosN * cosE - sinN * sinE
+    const sc = u * sinR + vSign * v * cosR
 
     samples[abs] = lumaToIreLocal(y) + sc
   }

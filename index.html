@@ -21,6 +21,19 @@
   <h1>PAL Decoder — stage 2</h1>
   <p>Stage-2 pipeline: composite samples → sync detection → horizontal PLL → vertical sync → per-line burst phase lock → notch decode. Progressive, field-1-only (288 lines).</p>
 
+  <h2>Decoder mode & synthetic phase error</h2>
+  <div class="row" style="align-items: center; gap: 1.5rem; margin-bottom: 0.6rem;">
+    <div>
+      <label><input type="radio" name="decode-mode" value="pald" checked> PAL-D (delay line)</label>
+      <label><input type="radio" name="decode-mode" value="notch"> PAL-S (notch only)</label>
+    </div>
+    <div style="display: flex; align-items: center; gap: 0.5rem; flex: 1;">
+      <span class="stat">chroma phase error</span>
+      <input type="range" id="phase-error" min="-60" max="60" value="0" style="flex: 1;">
+      <span class="stat" id="phase-error-label" style="min-width: 4ch;">0°</span>
+    </div>
+  </div>
+
   <h2>Our own encoder, round-tripped</h2>
   <div class="row">
     <div class="col">
@@ -35,6 +48,10 @@
       <h2>PSNR</h2>
       <div class="stat">whole image: <span id="own-psnr-all">…</span></div>
       <div class="stat">body (±8 px margin): <span id="own-psnr-body">…</span></div>
+      <p class="stat" style="max-width: 24rem;">
+        With a non-zero phase error, PAL-S shows Hanover bars
+        (alternating chroma stripes); PAL-D averages them out.
+      </p>
     </div>
   </div>
 

@@ -16,7 +16,8 @@ import { findSyncEdges } from './sync.js'
 import { HorizontalPLL, trackLines } from './pll.js'
 import { findLineOneSample } from './vsync.js'
 import { measureBurst } from './burst.js'
-import { decodeFrame } from './decoder-notch.js'
+import { decodeFrame as decodeFrameNotch } from './decoder-notch.js'
+import { decodeFrame as decodeFramePald }  from './decoder-pald.js'
 import { LINES_PER_FRAME } from './signal.js'
 import {
   SYNC_START, BURST_START, BURST_END, ACTIVE_START, ACTIVE_END, LINE_SAMPLES,
@@ -32,22 +33,28 @@ const COLOUR_KILLER = BURST_PEAK * 0.25
 const BURST_ANGLE_PLUS  = +3 * Math.PI / 4
 const BURST_ANGLE_MINUS = -3 * Math.PI / 4
 
+const DECODERS = {
+  notch: decodeFrameNotch,
+  pald:  decodeFramePald,
+}
+
 /**
  * Decode a full PAL frame from raw composite samples.
- *
- * The PAL switch state on each line (σ ∈ {+1, -1}) is derived purely
- * from burst phase alternation — no caller hint. Convention: the first
- * burst-bearing line we see is designated +V (the "field 1 line A" of
- * PAL's 4-field sequence). A real frame-sync implementation would peg
- * this to vertical sync; for now we use "first line with a burst", which
- * works for frames that start at line 1.
  *
  * @param {Float32Array} samples
  * @param {number} width
  * @param {number} height
- * @returns {Float32Array} RGB, width*height*3, values in [0,1]
+ * @param {object} [opts]
+ * @param {'notch'|'pald'} [opts.mode]  decoder to use. `notch` is PAL-S
+ *        (single-line); `pald` is PAL-D (1-H delay-line chroma averaging).
+ *        Default: 'pald' — what a real consumer PAL TV of the era did,
+ *        and the one that handles phase errors gracefully.
+ * @returns {Float32Array}
  */
-export function decodeComposite(samples, width, height) {
+export function decodeComposite(samples, width, height, opts = {}) {
+  const mode = opts.mode ?? 'pald'
+  const decodeFrame = DECODERS[mode]
+  if (!decodeFrame) throw new Error(`unknown decoder mode: ${mode}`)
   const edges = findSyncEdges(samples)
 
   // Vertical sync: locate line 1. If we can't find a broad-pulse sequence
