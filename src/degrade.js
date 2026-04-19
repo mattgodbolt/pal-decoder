@@ -3,8 +3,7 @@
 // between encode and decode so we can see how the pipeline copes with
 // real-world imperfections.
 //
-// Current set: AWGN noise, low-pass (bandwidth limit). Ringing, phase
-// jitter, and timing drift are planned for the next slice.
+// Current set: AWGN noise, band-limit, ringing, phase jitter.
 
 import { SAMPLE_RATE_HZ } from './signal.js'
 
@@ -102,4 +101,103 @@ function convolveSymmetric(x, h) {
     y[n] = s
   }
   return y
+}
+
+/**
+ * Add ringing / overshoot around sharp transitions. Simulates an
+ * under-damped IIR low-pass response — the "coffee-cup ring" you'd get
+ * from a video amplifier whose passband edge has been pushed just
+ * above Nyquist by a cheap compensation network. A Q of ~1 gives mild
+ * overshoot with a couple of cycles of ring; higher Q gives wilder
+ * rings.
+ *
+ * Implemented as a 2nd-order biquad peaking filter centred at
+ * `ringFreq` with gain `gainDb`, applied forward then reversed for
+ * zero phase shift (so sharp edges bloom symmetrically rather than
+ * trailing to one side).
+ *
+ * @param {Float32Array} samples
+ * @param {number} ringFreq      resonance centre (Hz)
+ * @param {number} [q]           quality factor (default 1.5)
+ * @param {number} [gainDb]      peak gain at resonance (default 4 dB)
+ * @param {number} [sampleRateHz] defaults to 4×Fsc
+ */
+export function addRinging(samples, ringFreq, q = 1.5, gainDb = 4, sampleRateHz = SAMPLE_RATE_HZ) {
+  if (!ringFreq || gainDb === 0) return samples
+  const A = Math.pow(10, gainDb / 40)
+  const w0 = 2 * Math.PI * ringFreq / sampleRateHz
+  const alpha = Math.sin(w0) / (2 * q)
+  const cosW = Math.cos(w0)
+  const b0 = 1 + alpha * A
+  const b1 = -2 * cosW
+  const b2 = 1 - alpha * A
+  const a0 = 1 + alpha / A
+  const a1 = -2 * cosW
+  const a2 = 1 - alpha / A
+  const B = [b0 / a0, b1 / a0, b2 / a0]
+  const A_ = [1,        a1 / a0, a2 / a0]
+
+  // Forward + reverse filtfilt for zero-phase ringing around the
+  // transition rather than lagging after it.
+  const fwd = biquad(samples, B, A_)
+  const rev = reverse(fwd)
+  const back = biquad(rev, B, A_)
+  return reverse(back)
+}
+
+function biquad(x, B, A) {
+  const y = new Float32Array(x.length)
+  let x1 = 0, x2 = 0, y1 = 0, y2 = 0
+  for (let n = 0; n < x.length; n++) {
+    const v = B[0] * x[n] + B[1] * x1 + B[2] * x2 - A[1] * y1 - A[2] * y2
+    x2 = x1; x1 = x[n]
+    y2 = y1; y1 = v
+    y[n] = v
+  }
+  return y
+}
+
+function reverse(x) {
+  const y = new Float32Array(x.length)
+  for (let i = 0, j = x.length - 1; i < x.length; i++, j--) y[i] = x[j]
+  return y
+}
+
+/**
+ * Add phase jitter: perturb each sample's effective time position by
+ * a small random amount and resample via linear interpolation. Models
+ * sub-sample clock noise in a cheap sync separator or capture setup,
+ * which shows up as chroma-phase twinkle (colour that flickers at fine
+ * detail, worst at saturated hues).
+ *
+ * @param {Float32Array} samples
+ * @param {number} rmsSamples    RMS jitter amplitude in samples
+ *                               (0.05 ≈ faint; 0.5 ≈ severe)
+ * @param {() => number} [rng]
+ * @returns {Float32Array}
+ */
+export function addPhaseJitter(samples, rmsSamples, rng = Math.random) {
+  if (rmsSamples <= 0) return samples
+  const N = samples.length
+  const out = new Float32Array(N)
+  // Per-sample gaussian offset, then resample from the original via
+  // linear interpolation at (i + offset).
+  for (let i = 0; i < N; i += 2) {
+    const u1 = Math.max(rng(), 1e-12)
+    const u2 = rng()
+    const mag = rmsSamples * Math.sqrt(-2 * Math.log(u1))
+    const g0 = mag * Math.cos(2 * Math.PI * u2)
+    const g1 = mag * Math.sin(2 * Math.PI * u2)
+    out[i] = interp(samples, i + g0)
+    if (i + 1 < N) out[i + 1] = interp(samples, i + 1 + g1)
+  }
+  return out
+}
+
+function interp(samples, x) {
+  if (x <= 0) return samples[0]
+  if (x >= samples.length - 1) return samples[samples.length - 1]
+  const i = Math.floor(x)
+  const f = x - i
+  return (1 - f) * samples[i] + f * samples[i + 1]
 }

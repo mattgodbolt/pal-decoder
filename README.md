@@ -74,7 +74,7 @@ disappear.
 | 3 | GLSL port of the notch decoder, tested against the JS oracle | pending |
 | 4 | PAL-D delay-line decoder, Hanover-bar cancellation | ✅ |
 | 4.5 | 2H comb-filter luma/chroma separator, dot-crawl cancellation | ✅ |
-| 5 | Degradation controls: noise, bandlimit, ringing, jitter, drift | in progress (noise + bandlimit) |
+| 5 | Degradation controls: noise, bandlimit, ringing, jitter, drift | ✅ (drift pending) |
 | 6 | `<pal-decoder>` custom element | pending |
 | 7 | jsbeeb / Miracle integration | pending |
 

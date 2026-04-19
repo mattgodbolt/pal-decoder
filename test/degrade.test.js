@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { addNoise, bandlimit } from '../src/degrade.js'
+import { addNoise, bandlimit, addRinging, addPhaseJitter } from '../src/degrade.js'
 import { SAMPLE_RATE_HZ } from '../src/signal.js'
 
 // Seeded deterministic PRNG.
@@ -82,4 +82,54 @@ test('bandlimit preserves phase of in-band signal (zero-phase FIR)', () => {
     assert.ok(Math.abs(y[i] - x[i]) < 0.02,
       `i=${i}: x=${x[i].toFixed(3)} y=${y[i].toFixed(3)}`)
   }
+})
+
+test('addRinging amplifies a sine at the resonance frequency', () => {
+  const N = 4000
+  const fRing = 4e6
+  const x = new Float32Array(N)
+  for (let i = 0; i < N; i++) x[i] = Math.sin(2 * Math.PI * fRing * i / SAMPLE_RATE_HZ)
+  const y = addRinging(x, fRing, 3, 6)
+  const rms = (arr) => {
+    let s = 0
+    for (let i = 500; i < arr.length - 500; i++) s += arr[i] * arr[i]
+    return Math.sqrt(s / (arr.length - 1000))
+  }
+  assert.ok(rms(y) > rms(x) * 1.3,
+    `at resonance in=${rms(x).toFixed(3)} out=${rms(y).toFixed(3)}`)
+})
+
+test('addRinging leaves DC untouched', () => {
+  const x = new Float32Array(1000).fill(0.4)
+  const y = addRinging(x, 4e6, 1.5, 6)
+  for (let i = 100; i < 900; i++) {
+    assert.ok(Math.abs(y[i] - 0.4) < 1e-3, `i=${i} y=${y[i]}`)
+  }
+})
+
+test('addPhaseJitter preserves signal statistics but adds variance at detail', () => {
+  const rng = (() => {
+    let s = 123
+    return () => {
+      s = (s + 0x6D2B79F5) >>> 0
+      let t = s
+      t = Math.imul(t ^ (t >>> 15), t | 1)
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
+      return ((t ^ (t >>> 14)) >>> 0) / 0x100000000
+    }
+  })()
+  // Sinusoid: per-sample value shifts slightly, variance from the
+  // original should be non-zero and scale with jitter RMS.
+  const N = 4000
+  const x = new Float32Array(N)
+  for (let i = 0; i < N; i++) x[i] = Math.sin(2 * Math.PI * 2e6 * i / SAMPLE_RATE_HZ)
+  const y = addPhaseJitter(x, 0.3, rng)
+  let sumSq = 0
+  for (let i = 50; i < N - 50; i++) { const d = x[i] - y[i]; sumSq += d*d }
+  assert.ok(sumSq / N > 0.001, `expected detectable jitter noise, got MSE ${(sumSq/N).toFixed(6)}`)
+  // But no DC bias.
+  let mean = 0
+  for (let i = 50; i < N - 50; i++) mean += y[i]
+  mean /= (N - 100)
+  assert.ok(Math.abs(mean) < 0.05, `mean drift ${mean}`)
 })
