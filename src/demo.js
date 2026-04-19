@@ -1,9 +1,9 @@
-// Browser entry point for the stage-1 demo: encode 75% colour bars,
-// decode with the notch decoder, and render both + one line's composite
-// waveform.
+// Browser entry point. Encode 75% colour bars, decode through the full
+// PLL-driven pipeline (no encoder metadata), and render the result plus
+// one composite line as a scrollable waveform.
 
 import { encodeFrame } from './encoder.js'
-import { decodeFrame } from './decoder-notch.js'
+import { decodeComposite } from './pipeline.js'
 import { colourBars75 } from './fixtures/bars.js'
 import { floatRgbToImageData, psnrDb, psnrDbWithMargin } from './image.js'
 import {
@@ -16,8 +16,11 @@ const W = 720, H = 576
 
 function run() {
   const src = colourBars75(W, H)
-  const { samples, lines } = encodeFrame(src, W, H)
-  const decoded = decodeFrame(samples, lines, W, H)
+  // Encoder emits the composite signal only; the full stage-2 pipeline
+  // (sync detection -> PLL -> burst measurement -> notch decode) runs
+  // over the raw samples without using the encoder's metadata.
+  const { samples } = encodeFrame(src, W, H)
+  const decoded = decodeComposite(samples, W, H)
   const psnrAll = psnrDb(src, decoded)
   // Skip 8 px either side of each bar edge: cross-luminance at sharp colour
   // transitions is intrinsic to notch decoding, not a decoder bug.
