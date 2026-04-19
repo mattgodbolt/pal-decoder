@@ -10,11 +10,11 @@
     .row { display: flex; gap: 1rem; align-items: flex-start; flex-wrap: wrap; }
     .col { display: flex; flex-direction: column; }
     canvas { image-rendering: pixelated; background: #000; border: 1px solid #333; }
-    /* Render at integer downscale ratios — 2:1 horizontally, 1:1
-       vertically — so single-source-line detail (Hanover-bar
-       alternation, scanline-level artifacts) isn't aliased away by
-       the browser's fractional downscaling. */
-    .img { width: 360px; height: 576px; image-rendering: pixelated; }
+    /* 1:1 native — no CSS scaling. Every decoded pixel is one display
+       pixel so per-line detail (Hanover-bar alternation, scanline
+       artifacts) is faithful, at the cost of a bigger canvas
+       (720×576 ≈ 5:4 aspect, close to PAL's native active-area aspect). */
+    .img { image-rendering: pixelated; }
     #wave { width: 100%; height: 220px; display: block; }
     code { background: #222; padding: 0.1rem 0.3rem; border-radius: 3px; }
     .stat { font-size: 0.9rem; color: #bbb; margin-top: 0.4rem; }
