@@ -2,8 +2,19 @@
 
 A WebGL-based PAL composite video decoder, with a pure-JS reference
 implementation that comes first and stays authoritative. Target: the
-look and warts of a 1980s consumer CRT fed by jsbeeb (BBC Micro) and
-Miracle (Sega Master System), not broadcast-grade decoding.
+look and warts of a 1980s consumer CRT — specifically the "push-button
+Ferguson TX10-chassis" you'd actually have had in your bedroom — fed
+by jsbeeb (BBC Micro) and Miracle (Sega Master System). Not broadcast-
+grade decoding.
+
+**Reference TV**: the Thorn TX10 (1980), as reviewed in *Television*
+magazine, April 1981. Its `TDA3560` single-chip PAL decoder uses a
+Bruch 1H chroma delay line (PAL-D) with notch luma/chroma separation.
+No comb filter. 10 MHz video input bandwidth on the direct composite
+path (what a home computer would use). Plenty we don't know yet
+(filter shapes, RGB output nonlinearities, phosphor response, CRT
+convergence errors) — the codebase flags things as "period-authentic"
+only when we've actually matched them.
 
 ## What's in the box
 
@@ -94,6 +105,16 @@ tools/
   serve.js         zero-dep static server
   decode-hacktv.js CLI: HackTV capture → PPM
 ```
+
+## Future directions (not period-authentic for the TX10, noted for later)
+
+- **Adaptive comb filter** (2D or 3D). Switches per-region between
+  notch and comb based on local horizontal-vs-vertical luma gradient,
+  so you get the best of both. First appeared in consumer TVs around
+  1990 once DSP chips got cheap; wrong era for the TX10. Good fit for
+  a "modern display, authentically-bad source signal" mode.
+- **Non-square pixel aspect** (real PAL has a display aspect of 4:3
+  over a ~702-wide active area). Our 720×576 canvases are 5:4.
 
 ## References
 
