@@ -59,15 +59,13 @@ function decodeField(rgb, samples, lines, width, firstLine, nRows, outputRowOffs
     const meta = lines[firstLine + f]
     if (!meta) continue
 
-    // Comb is only valid when the 2-back line's samples are *exactly*
-    // 2·LINE_SAMPLES earlier — that's the precondition for 180°
-    // subcarrier phase difference. Real PAL's fractional line timing
-    // (1135.0064 vs our integer 1135) means the PLL's integer-rounded
-    // activeStart occasionally drifts by one sample between lines; if
-    // it has, 2·LINE_SAMPLES is wrong and the comb will leak chroma.
-    // Fall back to notch on those lines.
+    // Comb is valid when the 2-back line's samples are close to
+    // 2·LINE_SAMPLES earlier. Fractional line-start positioning
+    // tolerates the real-PAL 0.0064-samples-per-line drift; we only
+    // fall back to notch if the PLL lost lock and the spacing is way
+    // off (e.g. a missed line).
     const combValid = metaPrev2 &&
-      meta.activeStart - metaPrev2.activeStart === 2 * LINE_SAMPLES
+      Math.abs(meta.activeStart - metaPrev2.activeStart - 2 * LINE_SAMPLES) < 2
     const cur = combValid
       ? decodeLineYuvComb(samples, meta, metaPrev2)
       : decodeLineYuv    (samples, meta)

@@ -91,8 +91,12 @@ export function buildLineMetadata(samples, tracked) {
   for (let line = 1; line <= LINES_PER_FRAME; line++) {
     const t = tracked[line - 1]
     if (!t) continue
-    const lineStart = Math.round(t.position - SYNC_START + 0.5)
-    if (lineStart < 0 || lineStart + ACTIVE_END > samples.length) continue
+    // Fractional line start (no rounding). Real PAL's 1135.0064-samples/line
+    // drift means the true line position is sub-sample precise; rounding
+    // here would shift subcarrier-phase alignment between neighbouring
+    // lines by up to ±π/2.
+    const lineStart = t.position - SYNC_START + 0.5
+    if (lineStart < -1 || lineStart + ACTIVE_END > samples.length + 1) continue
     lineStarts[line] = lineStart
     const burst = measureBurst(samples, lineStart, BURST_START, BURST_END)
     if (burst.amplitude > COLOUR_KILLER) rawBursts[line] = burst

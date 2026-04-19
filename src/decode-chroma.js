@@ -1,79 +1,68 @@
 // Per-line YUV demodulation, shared between the PAL-S, PAL-D, and
 // comb-filter decoders.
 //
+// activeStart is *fractional* — the true sub-sample position of the
+// first active-video sample on this line, as recovered by the PLL
+// without rounding. That's important because real PAL line timing is
+// 1135.0064 samples/line at 4×Fsc (ours rounds to 1135), and the
+// drift would otherwise shift subcarrier-phase alignment between
+// neighbouring lines by up to ±π/2.
+//
 // Two luma/chroma separators:
 //
 //   decodeLineYuv(samples, meta)
-//      Notch separator. Y[i] = (sig[i-1] + sig[i+1])/2 cancels Fsc
+//      Notch separator. Y[i] = (sig(i-1) + sig(i+1))/2 cancels Fsc
 //      because samples 2 apart are 180° out of subcarrier phase at
-//      4×Fsc. C = sig − Y. Fast and cheap, but leaks sharp luma
-//      transitions into chroma (dot crawl at colour-bar edges).
+//      4×Fsc. C = sig − Y.
 //
 //   decodeLineYuvComb(samples, meta, metaTwoFieldLinesBack)
-//      Vertical 2H comb separator. With 1135 samples/line (mod 4 = 3)
-//      one signal line advances the subcarrier by 270°, so lines two
-//      field-lines apart (= two signal lines, = four display rows)
-//      differ by exactly 2·270° ≡ 180°. σ (PAL switch) toggles per
-//      line so returns to the same sign over two lines. That gives:
-//         (sig_N + sig_{N-2}) / 2 = pure Y          (chroma cancels)
-//         (sig_N − sig_{N-2}) / 2 = pure chroma     (luma cancels)
-//      At vertical bar edges where Y is identical row-to-row, this is
-//      mathematically exact and eliminates cross-luminance. The cost
-//      is vertical luma softening over 4 display rows when Y varies
-//      vertically.
+//      2H vertical comb separator. Lines two field-lines apart
+//      differ by 180° of subcarrier phase (± a small real-PAL drift).
+//      (sig_N + sig_{N-2})/2 → pure Y, (sig_N − sig_{N-2})/2 → pure
+//      chroma. Mathematically exact on vertically-uniform content,
+//      softens vertical luma detail over 4 display rows.
 //
-// After separation, both routines demodulate chroma the same way: LPF
-// via 4-tap box filter (one subcarrier period), rotate from our
-// fixed-sample basis into this line's natural (U, V) frame using the
-// burst-measured phaseRotation, then fold σ out.
+// Both routines sample via linear interpolation (sampleAt) so any
+// fractional activeStart is handled uniformly. The sin/cos basis is
+// pre-rotated by (activeStart · π/2) mod 2π so demodulation is done
+// in the signal's actual subcarrier frame. The burst-derived
+// phaseRotation then captures any residual global phase offset.
 
 import { LEVEL_BLACK } from './signal.js'
 
-const SIN_TAB = [0, 1, 0, -1]
-const COS_TAB = [1, 0, -1, 0]
+/**
+ * Linear interpolation at fractional sample index.
+ */
+export function sampleAt(samples, x) {
+  if (x <= 0) return samples[0]
+  if (x >= samples.length - 1) return samples[samples.length - 1]
+  const i = Math.floor(x)
+  const f = x - i
+  return (1 - f) * samples[i] + f * samples[i + 1]
+}
 
 /**
  * @param {Float32Array} samples
  * @param {{ activeStart: number, length: number, vSign: 1|-1,
- *           phaseRotation?: number }} meta
- * @returns {{ Y: Float32Array, U: Float32Array, V: Float32Array,
- *             length: number }}
- */
-/**
- * Notch-separator path. See file header.
- *
- * @param {Float32Array} samples
- * @param {{ activeStart: number, length: number, vSign: 1|-1,
- *           phaseRotation?: number }} meta
+ *           phaseRotation?: number }} meta   activeStart may be fractional
  * @returns {{ Y: Float32Array, U: Float32Array, V: Float32Array,
  *             length: number }}
  */
 export function decodeLineYuv(samples, meta) {
   const { activeStart, length } = meta
 
-  const sig = new Float32Array(length)
-  for (let i = 0; i < length; i++) sig[i] = samples[activeStart + i] - LEVEL_BLACK
-
   const Y = new Float32Array(length)
-  for (let i = 1; i < length - 1; i++) Y[i] = 0.5 * (sig[i - 1] + sig[i + 1])
-  Y[0] = sig[0]
-  Y[length - 1] = sig[length - 1]
-
   const C = new Float32Array(length)
-  for (let i = 0; i < length; i++) C[i] = sig[i] - Y[i]
-
+  for (let i = 0; i < length; i++) {
+    const sPrev = sampleAt(samples, activeStart + i - 1) - LEVEL_BLACK
+    const sHere = sampleAt(samples, activeStart + i    ) - LEVEL_BLACK
+    const sNext = sampleAt(samples, activeStart + i + 1) - LEVEL_BLACK
+    Y[i] = 0.5 * (sPrev + sNext)
+    C[i] = sHere - Y[i]
+  }
   return demodChroma(Y, C, meta)
 }
 
-/**
- * Comb-separator path: takes the current line plus the same-field line
- * one field-line earlier (two 625-line numbers earlier).
- *
- * @param {Float32Array} samples
- * @param {object} meta           current line's metadata (see above)
- * @param {object} metaPrev       previous same-field line's metadata
- * @returns {{ Y, U, V, length }}
- */
 export function decodeLineYuvComb(samples, meta, metaPrev) {
   const { activeStart, length } = meta
   const prevStart = metaPrev.activeStart
@@ -81,29 +70,40 @@ export function decodeLineYuvComb(samples, meta, metaPrev) {
   const Y = new Float32Array(length)
   const C = new Float32Array(length)
   for (let i = 0; i < length; i++) {
-    const a = samples[activeStart + i]
-    const b = samples[prevStart   + i]
+    const a = sampleAt(samples, activeStart + i)
+    const b = sampleAt(samples, prevStart   + i)
     Y[i] = 0.5 * (a + b) - LEVEL_BLACK
     C[i] = 0.5 * (a - b)
   }
-
   return demodChroma(Y, C, meta)
 }
 
 function demodChroma(Y, C, meta) {
   const { activeStart, length, vSign, phaseRotation = 0 } = meta
+
+  // Phase of our "i=0" reference relative to the absolute subcarrier.
+  // At 4×Fsc the subcarrier advances π/2 per sample, so the phase at
+  // the fractional position activeStart is activeStart · π/2 (mod 2π).
+  const alpha = activeStart * (Math.PI / 2)
+  const s0 = Math.sin(alpha)
+  const c0 = Math.cos(alpha)
+  // Tables of sin((i+k)·π/2 + alpha) and cos(...) for k = 0..3. Stepping
+  // by π/2 cycles (s, c, -s, -c) / (c, -s, -c, s).
+  const SIN = [s0, c0, -s0, -c0]
+  const COS = [c0, -s0, -c0, s0]
+
   const cosA = Math.cos(phaseRotation)
   const sinA = Math.sin(phaseRotation)
 
   const U = new Float32Array(length)
   const V = new Float32Array(length)
   for (let i = 0; i < length - 3; i++) {
-    const p = (activeStart + i) & 3
+    const p = i & 3
     let uSum = 0, vSum = 0
     for (let k = 0; k < 4; k++) {
       const ph = (p + k) & 3
-      uSum += C[i + k] * SIN_TAB[ph]
-      vSum += C[i + k] * COS_TAB[ph]
+      uSum += C[i + k] * SIN[ph]
+      vSum += C[i + k] * COS[ph]
     }
     const uFixed = 0.5 * uSum
     const vFixed = 0.5 * vSum
