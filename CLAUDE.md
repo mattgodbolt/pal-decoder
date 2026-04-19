@@ -54,6 +54,24 @@ look of a 1980s consumer TV, not broadcast-grade decoding.
 7. Integration: jsbeeb and Miracle can swap their current pseudo-decoder
    for this one with minimal changes to their output path.
 
+## Test data
+
+- Our own JS encoder is the authoritative reference. The notch decoder
+  is tested against it for round-trip correctness.
+- HackTV (`codeberg.org/fsphil/hacktv`) is a planned cross-check oracle
+  once the encoder exists — same tool vhs-decode uses, so agreement is
+  meaningful. Disagreement is a bug to investigate, not a reason to
+  change the reference.
+- HackTV output is 16-bit signed at 13.5 or 20.25 MHz; our internal
+  rate is 4×Fsc (17.734475 MHz). Prefer running comparisons at HackTV's
+  native rate rather than resampling, so the resampler isn't in the
+  debugging loop for encoder correctness.
+- Pin / document the hacktv commit we validate against (known baseband
+  sync-level bug worth verifying).
+- Real-world captures (vhs-decode Internet Archive samples) are for
+  stage 5+ degradation testing only — idealised signals first.
+- `make fixtures` may require hacktv installed; `make test` must not.
+
 ## Ask before
 
 - Adding any dependency (runtime or dev).
