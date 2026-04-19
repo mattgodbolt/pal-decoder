@@ -18,6 +18,7 @@ import { findLineOneSample } from './vsync.js'
 import { measureBurst } from './burst.js'
 import { decodeFrame as decodeFrameNotch } from './decoder-notch.js'
 import { decodeFrame as decodeFramePald }  from './decoder-pald.js'
+import { decodeFrame as decodeFrameComb }  from './decoder-comb.js'
 import { LINES_PER_FRAME } from './signal.js'
 import {
   SYNC_START, BURST_START, BURST_END, ACTIVE_START, ACTIVE_END, LINE_SAMPLES,
@@ -36,6 +37,7 @@ const BURST_ANGLE_MINUS = -3 * Math.PI / 4
 const DECODERS = {
   notch: decodeFrameNotch,
   pald:  decodeFramePald,
+  comb:  decodeFrameComb,
 }
 
 /**
@@ -45,10 +47,13 @@ const DECODERS = {
  * @param {number} width
  * @param {number} height
  * @param {object} [opts]
- * @param {'notch'|'pald'} [opts.mode]  decoder to use. `notch` is PAL-S
- *        (single-line); `pald` is PAL-D (1-H delay-line chroma averaging).
- *        Default: 'pald' — what a real consumer PAL TV of the era did,
- *        and the one that handles phase errors gracefully.
+ * @param {'notch'|'pald'|'comb'} [opts.mode]  decoder to use.
+ *        - `notch`: PAL-S, per-line notch + no chroma averaging.
+ *        - `pald`:  PAL-D, notch separator + 1-H chroma averaging
+ *                   (cancels phase-error Hanover bars).
+ *        - `comb`:  comb separator + PAL-D averaging (also cancels
+ *                   cross-luminance dot crawl at sharp transitions).
+ *        Default: 'pald'.
  * @returns {Float32Array}
  */
 export function decodeComposite(samples, width, height, opts = {}) {

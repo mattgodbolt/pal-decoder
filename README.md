@@ -62,6 +62,7 @@ disappear.
 | 2 | CPU PLL (horizontal + vertical), burst-locked chroma | ✅ |
 | 3 | GLSL port of the notch decoder, tested against the JS oracle | pending |
 | 4 | PAL-D delay-line decoder, Hanover-bar cancellation | ✅ |
+| 4.5 | 2H comb-filter luma/chroma separator, dot-crawl cancellation | ✅ |
 | 5 | Degradation controls: noise, bandlimit, ringing, jitter, drift | in progress (noise + bandlimit) |
 | 6 | `<pal-decoder>` custom element | pending |
 | 7 | jsbeeb / Miracle integration | pending |
@@ -81,8 +82,9 @@ src/
   vsync.js         findLineOneSample: field-sync detection
   burst.js         measureBurst: U/V projection of colour burst
   decode-chroma.js shared per-line luma notch + demod
-  decoder-notch.js PAL-S decoder
-  decoder-pald.js  PAL-D decoder (same-field 1-H delay line)
+  decoder-notch.js PAL-S (notch separator, no chroma delay line)
+  decoder-pald.js  PAL-D (notch separator + 1-H chroma delay line)
+  decoder-comb.js  Comb (2H comb separator + 1-H chroma delay line)
   pipeline.js      decodeComposite: end-to-end, self-calibrating
   hacktv.js        int16 ↔ Float32 baseband conversion
   degrade.js       AWGN noise, band-limit FIR (more TBD)

@@ -61,7 +61,7 @@ async function run() {
   let ownSamples = null
 
   const render = () => {
-    const mode       = picked(modeRadios)   ?? 'pald'
+    const mode       = picked(modeRadios)   ?? 'comb'
     const phaseDeg   = Number(phaseSlider.value)
     const bwMhz      = Number(bwSlider.value)
     const noiseLvl   = Number(noiseSlider.value) / 1000
