@@ -14,7 +14,7 @@
 import { LEVEL_BLACK, LEVEL_WHITE } from './signal.js'
 import {
   FIELD1_ACTIVE_FIRST, FIELD2_ACTIVE_FIRST,
-  FIELD_ACTIVE_LINES, FRAME_ACTIVE_ROWS,
+  FIELD_ACTIVE_LINES, FRAME_ACTIVE_ROWS, LINE_SAMPLES,
 } from './timing.js'
 import { yuvToRgb } from './colorspace.js'
 import { decodeLineYuv, decodeLineYuvComb } from './decode-chroma.js'
@@ -59,10 +59,16 @@ function decodeField(rgb, samples, lines, width, firstLine, nRows, outputRowOffs
     const meta = lines[firstLine + f]
     if (!meta) continue
 
-    // First two rows of a field have no 2-back predecessor — fall back
-    // to the notch separator for those. A real CRT shows a transient
-    // at the top of each field too.
-    const cur = metaPrev2
+    // Comb is only valid when the 2-back line's samples are *exactly*
+    // 2·LINE_SAMPLES earlier — that's the precondition for 180°
+    // subcarrier phase difference. Real PAL's fractional line timing
+    // (1135.0064 vs our integer 1135) means the PLL's integer-rounded
+    // activeStart occasionally drifts by one sample between lines; if
+    // it has, 2·LINE_SAMPLES is wrong and the comb will leak chroma.
+    // Fall back to notch on those lines.
+    const combValid = metaPrev2 &&
+      meta.activeStart - metaPrev2.activeStart === 2 * LINE_SAMPLES
+    const cur = combValid
       ? decodeLineYuvComb(samples, meta, metaPrev2)
       : decodeLineYuv    (samples, meta)
     const prevForAvg = curPrev1 ?? cur
