@@ -7,14 +7,23 @@ Ferguson TX10-chassis" you'd actually have had in your bedroom — fed
 by jsbeeb (BBC Micro) and Miracle (Sega Master System). Not broadcast-
 grade decoding.
 
-**Reference TV**: the Thorn TX10 (1980), as reviewed in *Television*
-magazine, April 1981. Its `TDA3560` single-chip PAL decoder uses a
-Bruch 1H chroma delay line (PAL-D) with notch luma/chroma separation.
-No comb filter. 10 MHz video input bandwidth on the direct composite
-path (what a home computer would use). Plenty we don't know yet
-(filter shapes, RGB output nonlinearities, phosphor response, CRT
-convergence errors) — the codebase flags things as "period-authentic"
-only when we've actually matched them.
+**Era grounding** (not a specification we're matching pixel-perfect —
+a sketch of the kind of set our target user actually had):
+
+- **Ferguson TX-7140 / TX 37140** (1983–84), a 14″ UK portable budget
+  set built on Thorn's **TX90** chassis. Sold around £169. Visually
+  matches the "kid's bedroom TV circa 1985" archetype.
+- The TX90's *family predecessor*, the **Thorn TX10** (1980), is
+  better documented — reviewed by Eugene Trundle in *Television*
+  magazine, April 1981. Its `TDA3560` decoder integrates a Bruch 1H
+  chroma delay line (PAL-D) with notch luma/chroma separation, and
+  supports composite video input up to 10 MHz. The TX90 sits on the
+  same architectural branch with a similar IC family (TDA356x /
+  TDA451x) — single-chip PAL-D, notch separator, no comb.
+- Things we *don't* yet know precisely (filter shapes, RGB output
+  nonlinearities, phosphor response, CRT convergence errors) — the
+  codebase flags things as "period-authentic" only after we've
+  actually matched them against measured or specified behaviour.
 
 ## What's in the box
 
