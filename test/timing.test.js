@@ -8,12 +8,14 @@ import {
   ACTIVE_LINE_COUNT,
 } from '../src/timing.js'
 
-test('line layout is contiguous and non-overlapping', () => {
-  assert.equal(SYNC_START, FRONT_PORCH_SAMPLES)
+test('line layout is contiguous and non-overlapping (real-PAL convention)', () => {
+  // SYNC at line start (sample 0); back porch follows; then active;
+  // then front porch — which closes out the line.
+  assert.equal(SYNC_START, 0)
   assert.equal(SYNC_END - SYNC_START, SYNC_SAMPLES)
   assert.equal(ACTIVE_START - SYNC_END, BACK_PORCH_SAMPLES)
   assert.equal(ACTIVE_END - ACTIVE_START, ACTIVE_SAMPLES)
-  assert.equal(LINE_SAMPLES, ACTIVE_END)
+  assert.equal(LINE_SAMPLES - ACTIVE_END, FRONT_PORCH_SAMPLES)
 })
 
 test('burst falls entirely within the back porch', () => {

@@ -1,80 +1,66 @@
-// Vertical sync (field-start) detection.
+// Vertical sync (field-start) detection for both fields.
 //
-// PAL's broad-pulse sequence is identical between field 1 and field 2,
-// so one group can't tell you which you've found. Three groups can:
-// the spacing between consecutive groups alternates — 312 lines from
-// field 1 to field 2, 313 lines from field 2 back to field 1 of the
-// next frame. The field-1 group is the one whose outgoing spacing is
-// *shorter* than the following group's.
+// Real PAL: field 1 broad block starts on the integer line grid;
+// field 2 broad block is half a line offset (FIELD_2_START =
+// 312·LS + HALF_LINE_SAMPLES). Broad groups are one field-period
+// apart, and both fields have the same internal broad-pulse pattern,
+// so spacing alone can't tell them apart.
 //
-// Once we know which group is field 1, we anchor line 1 using the
-// first narrow-sync edge *after* that group. For 625/50 PAL that's
-// line 6's horizontal sync (the first five lines carry broad pulses
-// only). Line 6's edge sits at frame_start + 5·LINE_SAMPLES +
-// SYNC_START - 0.5, so line 1 = that edge − 5·LINE_SAMPLES − SYNC_START
-// + 0.5. This avoids any assumptions about slice-coordinate alignment.
-//
-// With fewer than 3 broad-pulse groups we fall back to "first group is
-// field 1" — correct when the signal starts at the beginning of a
-// frame, may be off by a field when starting mid-stream.
+// We anchor each field's PLL from the first narrow sync after its
+// broad-pulse group. Convention: the first broad-pulse group seen
+// in the signal is field 1. On a stream that starts at a proper
+// frame boundary this is correct. Signals that start mid-frame
+// (arbitrary capture cut-ins) may paint odd lines where even were
+// expected and vice versa — the same ambiguity a real TV has when
+// you yank its aerial and re-connect it partway through a frame.
 
 import { broadSyncPulses, findSyncEdges } from './sync.js'
-import { LINE_SAMPLES, SYNC_START } from './timing.js'
+import { LINE_SAMPLES } from './timing.js'
 
 /**
- * Find the sample index of line 1 of field 1.
+ * Locate per-field PLL anchor points: the sample position of the
+ * first narrow horizontal sync immediately following each field's
+ * broad-pulse group.
  *
  * @param {Float32Array} samples
- * @returns {number|null}
+ * @returns {{ field1FirstNarrow: number, field2FirstNarrow: number } | null}
  */
-export function findFieldOneSample(samples) {
+export function findFieldAnchors(samples) {
   const broads = broadSyncPulses(samples)
   if (broads.length === 0) return null
   const narrows = findSyncEdges(samples)
   if (narrows.length === 0) return null
 
   const groups = groupBroadPulses(broads)
+  if (groups.length < 2) return null // need both fields' broad groups
 
-  // Pick the field-1 group.
-  let fieldOneGroup = groups[0]
-  if (groups.length >= 3) {
-    const spacings = []
-    for (let i = 1; i < groups.length; i++) {
-      spacings.push(groups[i][0].position - groups[i - 1][0].position)
-    }
-    for (let i = 0; i < spacings.length - 1; i++) {
-      if (spacings[i] < spacings[i + 1]) {
-        fieldOneGroup = groups[i]
-        break
-      }
-    }
-  }
-
-  // Anchor via the first narrow-sync edge after the group ends. That's
-  // line 6 of the 625-line frame.
-  const groupEnd = fieldOneGroup[fieldOneGroup.length - 1].position
-  const nextNarrow = narrows.find((e) => e > groupEnd + LINE_SAMPLES / 2)
-  if (nextNarrow === undefined) return null
-
-  // Walk back five lines and subtract the sync-offset to get line 1's
-  // sample position.
-  return nextNarrow - 5 * LINE_SAMPLES - SYNC_START + 0.5
+  const f1 = firstNarrowAfter(narrows, groups[0])
+  const f2 = firstNarrowAfter(narrows, groups[1])
+  if (f1 === null || f2 === null) return null
+  return { field1FirstNarrow: f1, field2FirstNarrow: f2 }
 }
 
 /**
- * Back-compat: the simple "first broad-pulse group" detection that we
- * used originally. Kept for tests and as a fallback.
+ * Back-compat: returns just the field-1 anchor expressed as "line 1's
+ * sync edge sample position", obtained by walking five lines back
+ * from the first post-broad narrow sync.
  */
+export function findFieldOneSample(samples) {
+  const a = findFieldAnchors(samples)
+  if (!a) return null
+  return a.field1FirstNarrow - 5 * LINE_SAMPLES
+}
+
+/** Back-compat alias used by tests. */
 export function findLineOneSample(samples) {
-  const broads = broadSyncPulses(samples)
-  if (broads.length === 0) return null
-  const first = broads[0].position
-  const phase = mod(first, LINE_SAMPLES)
-  const quarter = LINE_SAMPLES / 4
-  if (phase < quarter || phase > LINE_SAMPLES - quarter) {
-    return first - phase + (phase > LINE_SAMPLES / 2 ? LINE_SAMPLES : 0)
-  }
-  return first - LINE_SAMPLES / 2
+  return findFieldOneSample(samples)
+}
+
+function firstNarrowAfter(narrows, group) {
+  const groupEnd = group[group.length - 1].position
+  const minOffset = LINE_SAMPLES / 2
+  const found = narrows.find((e) => e > groupEnd + minOffset)
+  return found ?? null
 }
 
 function groupBroadPulses(broads) {
@@ -90,9 +76,4 @@ function groupBroadPulses(broads) {
   }
   groups.push(current)
   return groups
-}
-
-function mod(a, b) {
-  const r = a % b
-  return r < 0 ? r + b : r
 }

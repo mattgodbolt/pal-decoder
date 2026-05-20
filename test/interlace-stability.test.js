@@ -1,45 +1,36 @@
-// Real-PAL multi-frame stability test.
-//
-// With half-line-offset interlace (real PAL / HackTV), our decoder must
-// lock once on field 1 and stay aligned across every subsequent frame.
-// Earlier versions alternated between correct and wrong frames because
-// frame-stepping at LINE_SAMPLES intervals got confused by the
-// half-line field offset.
-//
-// Test uses our own encoder. If the encoder is proper real PAL and the
-// decoder handles the half-line offset, every framesToSettle value
-// produces the SAME decode (since the signal is stable across frames).
+// Multi-frame stability. The test signal is N frames emitted with
+// subcarrier phase continuous across frame boundaries (encodeFrames),
+// which is what a real broadcast looks like — subcarrier walks the
+// 8-field supercycle, it does not restart at zero every frame.
+// Earlier versions of this test tiled a single encoded frame with
+// Float32Array.set(), which introduced a 3π/2 subcarrier-phase jump
+// at every tile boundary. That is not a PAL signal; any decoder
+// gymnastics needed to "cope" with it are solving an artefact.
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 
-import { encodeFrame, progressive } from '../src/encoder.js'
+import { encodeFrames, progressive } from '../src/encoder.js'
 import { colourBarsEbu } from '../src/fixtures/bars-ebu.js'
 import { int16ToFloat32 } from '../src/hacktv.js'
 import { PalDecoder } from '../src/pal-decoder.js'
+import { FRAME_SAMPLES } from '../src/timing.js'
 
 test('multi-frame decoding is stable across frames on our own encoder', () => {
   const w = 64, h = 576
   const src = progressive(colourBarsEbu(w, h >> 1), w, h >> 1)
-  const { samples: one } = encodeFrame(src, w, h)
-  // Tile to enough frames to exercise many decode steps.
   const N_FRAMES = 8
-  const tiled = new Float32Array(one.length * N_FRAMES)
-  for (let r = 0; r < N_FRAMES; r++) tiled.set(one, r * one.length)
+  const signal = encodeFrames(src, w, h, N_FRAMES)
 
   const dec = new PalDecoder({ mode: 'pald', width: w, height: h })
-  // Decode N successive frames. Collect the samples of a known-colour
-  // pixel (yellow bar, row 100, x=10 in bar 1 [EBU yellow = 191, 191, 0]).
   const yellow = (100 * w + 10) * 3
   const samplesSeen = []
   for (let f = 0; f < N_FRAMES - 1; f++) {
-    const rgb = dec.decodeFrame(tiled)
+    const rgb = dec.decodeFrame(signal)
     samplesSeen.push([rgb[yellow], rgb[yellow + 1], rgb[yellow + 2]])
   }
-  // All samples should be essentially identical (tolerance for float
-  // rounding + PAL-D delay line warm-up on the FIRST frame only).
-  // Compare frame 2 onwards for stability.
+  // PAL-D's delay line needs one frame to warm up; compare from frame 2 on.
   const ref = samplesSeen[1]
   for (let f = 2; f < samplesSeen.length; f++) {
     const s = samplesSeen[f]
@@ -48,9 +39,57 @@ test('multi-frame decoding is stable across frames on our own encoder', () => {
         `frame ${f + 1} channel ${c}: ${s[c].toFixed(3)} vs ref ${ref[c].toFixed(3)}`)
     }
   }
-  // And we should actually be decoding yellow, not some random colour.
   assert.ok(ref[0] > 0.6 && ref[1] > 0.6 && ref[2] < 0.1,
     `reference frame should decode yellow, got ${ref.map((v) => v.toFixed(2))}`)
+})
+
+// Starting mid-frame: the first broad-pulse group seen is field 2 of
+// whatever frame we sliced into the middle of, so the decoder paints
+// even/odd lines swapped relative to our source image — the decoded
+// colour at any given row shifts by one line. That's the real-TV
+// behaviour too (tune in mid-frame, get a momentary geometric offset).
+// What MUST hold: once the decoder has locked, successive frames
+// decode identically. No alternation, no drift.
+test('decoder stays locked once acquired, from any starting offset', () => {
+  const w = 64, h = 576
+  const src = progressive(colourBarsEbu(w, h >> 1), w, h >> 1)
+  const N_FRAMES = 10
+  const signal = encodeFrames(src, w, h, N_FRAMES)
+
+  const yellowRow = 100
+  const OFFSETS = [0, 0.13, 0.16, 0.25, 0.5, 0.7, 0.75, 0.9]
+  for (const off of OFFSETS) {
+    const offset = Math.round(off * FRAME_SAMPLES)
+    const sliced = signal.subarray(offset)
+    const dec = new PalDecoder({ mode: 'pald', width: w, height: h })
+
+    // Sample a whole vertical slice, not just one pixel — if the
+    // decoder is off by one line (field swap) we still find yellow
+    // nearby. We want stability across frames, not specific row.
+    const pickSwatch = (rgb) => {
+      let s = [0, 0, 0]
+      for (let dy = -2; dy <= 2; dy++) {
+        const o = ((yellowRow + dy) * w + 10) * 3
+        for (let c = 0; c < 3; c++) s[c] += rgb[o + c] / 5
+      }
+      return s
+    }
+
+    let settled = null
+    for (let f = 0; f < 6; f++) {
+      const rgb = dec.decodeFrame(sliced)
+      if (f === 2) settled = pickSwatch(rgb)
+      else if (f > 2) {
+        const s = pickSwatch(rgb)
+        for (let c = 0; c < 3; c++) {
+          assert.ok(Math.abs(s[c] - settled[c]) < 0.02,
+            `offset ${off} frame ${f} channel ${c}: ${s[c].toFixed(3)} vs settled ${settled[c].toFixed(3)}`)
+        }
+      }
+    }
+    assert.ok(settled[0] > 0.6 && settled[1] > 0.6 && settled[2] < 0.1,
+      `offset ${off}: settled colour ${settled.map((v) => v.toFixed(2))} — expected yellow`)
+  }
 })
 
 test('multi-frame HackTV decoding is stable after acquisition (real PAL interlace)', { skip: !fs.existsSync('fixtures/hacktv-bars.int16') }, () => {

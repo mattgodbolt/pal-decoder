@@ -34,6 +34,9 @@ import {
   FIELD1_ACTIVE_FIRST, FIELD1_ACTIVE_LAST,
   FIELD2_ACTIVE_FIRST, FIELD2_ACTIVE_LAST,
   FIELD_ACTIVE_LINES, FRAME_ACTIVE_ROWS, FRAME_SAMPLES,
+  FIELD_2_START, HALF_LINE_SAMPLES,
+  FIELD1_BROAD_FIRST, FIELD1_BROAD_LAST,
+  FIELD2_BROAD_FIRST, FIELD2_BROAD_LAST,
   lineToSample, lineField, isBroadPulseLine,
 } from './timing.js'
 import { rgbToYuv } from './colorspace.js'
@@ -56,6 +59,14 @@ const RT_HALF = Math.SQRT1_2
  * @param {number} [opts.chromaPhaseError]  subcarrier phase offset
  *        injected into active-video modulation but NOT the burst.
  *        Useful to demo Hanover bars under PAL-S.
+ * @param {number} [opts.absoluteSampleStart=0]  global sample index
+ *        that this frame's sample 0 corresponds to. Emit successive
+ *        frames with absoluteSampleStart = k·FRAME_SAMPLES and the
+ *        subcarrier is continuous across frame boundaries — required
+ *        for any honest multi-frame test signal, since our 4×Fsc
+ *        grid has FRAME_SAMPLES mod 4 = 3 (a real broadcast's
+ *        subcarrier walks through an 8-field / 4-frame supercycle,
+ *        it does not restart at zero every frame).
  * @returns {{ samples: Float32Array, lines: Array }}
  */
 export function encodeFrame(rgb, width, height, opts = {}) {
@@ -66,6 +77,7 @@ export function encodeFrame(rgb, width, height, opts = {}) {
     throw new Error(`rgb length ${rgb.length} != ${width * height * 3}`)
   }
   const chromaPhaseError = opts.chromaPhaseError ?? 0
+  const absoluteSampleStart = opts.absoluteSampleStart ?? 0
 
   const samples = new Float32Array(FRAME_SAMPLES)
   samples.fill(LEVEL_BLANKING)
@@ -78,28 +90,35 @@ export function encodeFrame(rgb, width, height, opts = {}) {
   const firstLineField1 = FIELD1_ACTIVE_FIRST + pad1
   const firstLineField2 = FIELD2_ACTIVE_FIRST + pad2
 
+  // Field 1 broad pulses occupy lines 1-5 (integer line grid).
+  writeBroadPulseBlock(samples, 0)
+  // Field 2 broad pulses sit at FIELD_2_START — HALF-LINE offset into
+  // what would be the integer start of line 313. They span line
+  // boundaries rather than lining up with any one line's integer
+  // start, which is how real PAL's 2.5-line-per-5-half-pulses
+  // structure fits into 312.5-line interlace.
+  writeBroadPulseBlock(samples, FIELD_2_START)
+
   for (let line = 1; line <= LINES_PER_FRAME; line++) {
-    // Line's sample origin respects the half-line offset for field 2.
-    // Absolute line numbers 1..312 are field 1 at integer line grid.
-    // 313..624 are field 2 at field_2_start + (line-313)·LINE_SAMPLES.
     if (line > 624) continue // line 625 unused in our model
     const base = lineToSample(line)
 
+    // Broad-pulse lines: sync samples come entirely from the broad-pulse
+    // block; no narrow sync on these lines. (Real PAL has equalising
+    // pulses flanking the broad block; we skip them — the surrounding
+    // lines stay at blanking.)
+    if (isBroadPulseLine(line)) continue
+
     writeLineSync(samples, base, line)
 
-    // PAL switch alternates per absolute-line number across the whole
-    // frame (each scan line flips V).
     const vSign = ((line - FIELD1_ACTIVE_FIRST) & 1) === 0 ? +1 : -1
-
-    if (isBroadPulseLine(line)) continue
 
     const inField1 = line >= FIELD1_ACTIVE_FIRST && line <= FIELD1_ACTIVE_LAST
     const inField2 = line >= FIELD2_ACTIVE_FIRST && line <= FIELD2_ACTIVE_LAST
     if (!inField1 && !inField2) continue
 
-    writeBurst(samples, base, vSign)
+    writeBurst(samples, base, vSign, absoluteSampleStart)
 
-    // Map this scanline to an image row: field 1 → even rows, field 2 → odd.
     let imageRow = -1
     if (inField1) {
       const fieldY = line - firstLineField1
@@ -110,7 +129,7 @@ export function encodeFrame(rgb, width, height, opts = {}) {
     }
 
     if (imageRow >= 0) {
-      writeActiveLine(samples, base, rgb, width, imageRow, vSign, chromaPhaseError)
+      writeActiveLine(samples, base, rgb, width, imageRow, vSign, chromaPhaseError, absoluteSampleStart)
     }
     lines[line] = {
       activeStart: base + ACTIVE_START,
@@ -122,6 +141,34 @@ export function encodeFrame(rgb, width, height, opts = {}) {
   }
 
   return { samples, lines }
+}
+
+// Broad-pulse block starting at `blockStart`. Writes 5 half-line-wide
+// sync-tip pulses spanning 2.5 lines, matching real PAL / HackTV VBI.
+function writeBroadPulseBlock(samples, blockStart) {
+  const pulseWidth = HALF_LINE_SAMPLES - Math.round(2.3e-6 * 17_734_475) // ~526
+  for (let p = 0; p < 5; p++) {
+    const pStart = blockStart + p * HALF_LINE_SAMPLES
+    for (let i = 0; i < pulseWidth; i++) {
+      samples[pStart + i] = LEVEL_SYNC_TIP
+    }
+  }
+}
+
+/**
+ * Emit N frames of the same image back-to-back with subcarrier phase
+ * continuous across frame boundaries. Honest multi-frame test signal.
+ */
+export function encodeFrames(rgb, width, height, nFrames, opts = {}) {
+  const out = new Float32Array(FRAME_SAMPLES * nFrames)
+  for (let k = 0; k < nFrames; k++) {
+    const { samples } = encodeFrame(rgb, width, height, {
+      ...opts,
+      absoluteSampleStart: k * FRAME_SAMPLES,
+    })
+    out.set(samples, k * FRAME_SAMPLES)
+  }
+  return out
 }
 
 /**
@@ -144,32 +191,19 @@ export function progressive(rgb, width, height) {
 }
 
 function writeLineSync(samples, base, line) {
-  if (isBroadPulseLine(line)) {
-    // Broad pulses: two ~half-line-wide sync-tip pulses per broad-pulse
-    // line, each separated by a short blanking gap. (We emit a
-    // simplified broad-pulse structure — enough for vertical-sync
-    // detection. Real PAL has 5 broad pulses across 2.5 lines; our
-    // per-line model gives the decoder the same wide-pulse signal
-    // regardless.)
-    const half = LINE_SAMPLES >> 1
-    const gap  = Math.round(2.3e-6 * 17_734_475) // ~2.3 µs
-    for (let i = 0;    i < half - gap;          i++) samples[base + i] = LEVEL_SYNC_TIP
-    for (let i = half; i < LINE_SAMPLES - gap;  i++) samples[base + i] = LEVEL_SYNC_TIP
-    return
-  }
   for (let i = SYNC_START; i < SYNC_END; i++) samples[base + i] = LEVEL_SYNC_TIP
 }
 
-function writeBurst(samples, base, vSign) {
+function writeBurst(samples, base, vSign, absoluteSampleStart) {
   const uCoef = -RT_HALF * BURST_PEAK
   const vCoef = vSign * RT_HALF * BURST_PEAK
   for (let i = BURST_START; i < BURST_END; i++) {
-    const p = (base + i) & 3
+    const p = (base + i + absoluteSampleStart) & 3
     samples[base + i] = uCoef * SIN_TAB[p] + vCoef * COS_TAB[p]
   }
 }
 
-function writeActiveLine(samples, base, rgb, width, picY, vSign, chromaPhaseError) {
+function writeActiveLine(samples, base, rgb, width, picY, vSign, chromaPhaseError, absoluteSampleStart) {
   const active = ACTIVE_END - ACTIVE_START
   const cosE = Math.cos(chromaPhaseError)
   const sinE = Math.sin(chromaPhaseError)
@@ -178,7 +212,7 @@ function writeActiveLine(samples, base, rgb, width, picY, vSign, chromaPhaseErro
     const o = (picY * width + x) * 3
     const [y, u, v] = rgbToYuv(rgb[o], rgb[o + 1], rgb[o + 2])
     const abs = base + ACTIVE_START + i
-    const p = abs & 3
+    const p = (abs + absoluteSampleStart) & 3
     const sinN = SIN_TAB[p]
     const cosN = COS_TAB[p]
     const sinR = sinN * cosE + cosN * sinE

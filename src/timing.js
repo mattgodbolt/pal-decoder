@@ -40,14 +40,18 @@ export const BURST_DELAY_SAMPLES = usToSamples(T_BURST_DELAY_US)
 export const BURST_SAMPLES       = usToSamples(T_BURST_US)
 export const ACTIVE_SAMPLES      = usToSamples(T_ACTIVE_US)
 
-// Line offsets (sample index within a line, 0-based).
-export const SYNC_START    = FRONT_PORCH_SAMPLES
+// Line offsets (sample index within a line, 0-based) using the real-PAL
+// convention: SYNC starts at sample 0, back porch + burst follow, then
+// active, and finally FRONT PORCH at the end. This matches HackTV's
+// output so captures can be decoded against the same grid.
+export const SYNC_START    = 0
 export const SYNC_END      = SYNC_START + SYNC_SAMPLES
 export const BURST_START   = SYNC_END + BURST_DELAY_SAMPLES
 export const BURST_END     = BURST_START + BURST_SAMPLES
 export const ACTIVE_START  = SYNC_END + BACK_PORCH_SAMPLES
 export const ACTIVE_END    = ACTIVE_START + ACTIVE_SAMPLES
-export const LINE_SAMPLES  = ACTIVE_END
+export const FRONT_PORCH_START = ACTIVE_END
+export const LINE_SAMPLES  = ACTIVE_END + FRONT_PORCH_SAMPLES
 
 // Frame / field structure.
 export const LINES_PER_FRAME  = 625 // total absolute line count
@@ -66,10 +70,13 @@ export const FIELD_2_START     = 312 * LINE_SAMPLES + HALF_LINE_SAMPLES // 35468
 export const FIELD1_ACTIVE_FIRST = 23
 export const FIELD1_ACTIVE_LAST  = 310
 
-// Field-2 active region: local lines 23..310 in field 2. Absolute
-// numbers: 313 + (local - 1), so 313 + 22 = 335 up to 313 + 309 = 622.
-export const FIELD2_ACTIVE_FIRST = 335
-export const FIELD2_ACTIVE_LAST  = 622
+// Field-2 active region. Per ITU-R BT.470, field 2's blanking is one
+// line longer than field 1's because the half-line offset pushes
+// everything by half a scan line — so field 2 active starts at line
+// 336 (not 335) and ends at 623. Local index of field-2 first active
+// is 24 (instead of field 1's 23).
+export const FIELD2_ACTIVE_FIRST = 336
+export const FIELD2_ACTIVE_LAST  = 623
 
 export const FIELD_ACTIVE_LINES  = FIELD1_ACTIVE_LAST - FIELD1_ACTIVE_FIRST + 1 // 288
 export const FRAME_ACTIVE_ROWS   = FIELD_ACTIVE_LINES * 2                       // 576
@@ -87,18 +94,17 @@ export const FIELD2_BROAD_FIRST = 313
 export const FIELD2_BROAD_LAST  = 317
 
 /**
- * Sample index where line N's zero-sample sits.
+ * Sample index where line N's sync would sit on an integer line grid.
+ * All 625 lines use the same grid: line N at sample (N-1)·LINE_SAMPLES.
+ * The half-line interlace offset shows up only in the POSITION of
+ * field 2's broad-pulse *block* (FIELD_2_START), which spans line
+ * boundaries rather than aligning with any one line.
  *
- * Lines 1..312 are field 1 at an integer grid; lines 313..624 are
- * field 2 starting at FIELD_2_START (half-line offset from the
- * equivalent integer grid). Line 625 isn't used in our model.
- *
- * @param {number} absLine 1..624
+ * @param {number} absLine 1..625
  * @returns {number}
  */
 export function lineToSample(absLine) {
-  if (absLine <= FIELD2_BROAD_FIRST - 1) return (absLine - 1) * LINE_SAMPLES
-  return FIELD_2_START + (absLine - FIELD2_BROAD_FIRST) * LINE_SAMPLES
+  return (absLine - 1) * LINE_SAMPLES
 }
 
 /**

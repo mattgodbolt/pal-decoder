@@ -11,7 +11,7 @@
 
 import { findSyncEdges } from './sync.js'
 import { HorizontalPLL, trackLines } from './pll.js'
-import { findFieldOneSample } from './vsync.js'
+import { findFieldAnchors } from './vsync.js'
 import { measureBurst } from './burst.js'
 import { decodeFrame as decodeFrameNotch } from './decoder-notch.js'
 import { decodeFrame as decodeFramePald }  from './decoder-pald.js'
@@ -58,17 +58,25 @@ export class PalDecoder {
     const edges = findSyncEdges(samples)
 
     if (!this.pllField1 || !this.pllField2) {
-      // findFieldOneSample locates field-1 line 1 (the "frame start").
-      // Both PLLs are seeded from this; field 2 PLL sits FIELD_2_START
-      // samples later.
-      const fieldOneStart = findFieldOneSample(samples) ?? 0
+      // findFieldAnchors locates the FIRST narrow sync after each
+      // field's broad-pulse group. Each PLL starts at "5 lines before
+      // first narrow" — that's where the field's "line 1" sync would
+      // be if narrow sync had been continuous through VBI. The PLL
+      // free-runs through those 5 lines and locks once it reaches the
+      // first real narrow edge. This handles both our encoder and
+      // HackTV's half-line-offset interlace because we don't assume
+      // any specific offset between fields — we use what the signal
+      // actually emits.
+      const anchors = findFieldAnchors(samples)
+      const f1 = anchors ? anchors.field1FirstNarrow - 5 * LINE_SAMPLES : 0
+      const f2 = anchors ? anchors.field2FirstNarrow - 5 * LINE_SAMPLES : FIELD_2_START
       this.pllField1 = new HorizontalPLL({
         period: LINE_SAMPLES,
-        position: fieldOneStart + SYNC_START - 0.5,
+        position: f1,
       })
       this.pllField2 = new HorizontalPLL({
         period: LINE_SAMPLES,
-        position: fieldOneStart + FIELD_2_START + SYNC_START - 0.5,
+        position: f2,
       })
     }
 
@@ -100,6 +108,13 @@ export class PalDecoder {
  * Build the per-absolute-line metadata array used by the decoders from
  * two per-field tracked-line arrays (each 312 long).
  */
+function angleDelta(a, b) {
+  let d = a - b
+  while (d > Math.PI)  d -= 2 * Math.PI
+  while (d < -Math.PI) d += 2 * Math.PI
+  return d
+}
+
 export function buildLineMetadata(samples, trackedF1, trackedF2) {
   const lines = new Array(LINES_PER_FRAME + 1).fill(null)
   const activeLen = ACTIVE_END - ACTIVE_START
@@ -124,15 +139,21 @@ export function buildLineMetadata(samples, trackedF1, trackedF2) {
     if (burst.amplitude > COLOUR_KILLER) rawBursts[line] = burst
   }
 
-  // σ convention: first burst-bearing line is +V. σ alternates per
-  // absolute line. (Each absolute line of ITU-R 625 numbering has V
-  // flipped, including across field boundaries — the "PAL switch"
-  // depends on line parity.)
-  let firstBurstLine = -1
+  // PAL switch state is resolved from burst geometry. Each line's
+  // burst sits at +135° (+V) or −135° (−V) from +U in an undistorted
+  // signal; summing complex burst vectors across the frame cancels
+  // the ±V swing and leaves a resultant along −U, regardless of any
+  // global subcarrier-phase offset θ. Cross-product of a line's
+  // burst against that mean tells us which side of U it sits on,
+  // which IS the PAL switch state — no need to know which absolute
+  // line the source's first burst happens to land on.
+  let sumU = 0, sumV = 0
   for (let line = 1; line <= LINES_PER_FRAME; line++) {
-    if (rawBursts[line]) { firstBurstLine = line; break }
+    const b = rawBursts[line]
+    if (!b) continue
+    sumU += b.uComponent
+    sumV += b.vComponent
   }
-
   for (let line = 1; line <= LINES_PER_FRAME; line++) {
     const lineStart = lineStarts[line]
     if (lineStart === null) continue
@@ -140,10 +161,10 @@ export function buildLineMetadata(samples, trackedF1, trackedF2) {
 
     let vSign, phaseRotation
     if (burst) {
-      const parity = (line - firstBurstLine) & 1
-      vSign = parity === 0 ? +1 : -1
+      const cross = burst.vComponent * sumU - burst.uComponent * sumV
+      vSign = cross < 0 ? +1 : -1
       const ideal = vSign > 0 ? BURST_ANGLE_PLUS : BURST_ANGLE_MINUS
-      phaseRotation = burst.phase - ideal
+      phaseRotation = angleDelta(burst.phase, ideal)
     } else {
       vSign = +1
       phaseRotation = 0

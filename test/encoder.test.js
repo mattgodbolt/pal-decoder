@@ -5,7 +5,7 @@ import { encodeFrame, BURST_PEAK } from '../src/encoder.js'
 import {
   LINE_SAMPLES, SYNC_START, SYNC_END, BURST_START, BURST_END,
   ACTIVE_START, ACTIVE_END, ACTIVE_FIRST_LINE, ACTIVE_LINE_COUNT,
-  lineToSample,
+  lineToSample, isBroadPulseLine,
 } from '../src/timing.js'
 import { LINES_PER_FRAME } from '../src/signal.js'
 import {
@@ -24,13 +24,13 @@ test('output has correct size', () => {
   assert.equal(samples.length, LINES_PER_FRAME * LINE_SAMPLES)
 })
 
-test('every line carries a horizontal sync pulse', () => {
+test('every non-broad-pulse line carries a narrow horizontal sync', () => {
   const { samples } = encodeFrame(solid(10, 10, 0.5, 0.5, 0.5), 10, 10)
-  // Lines 1..624 are valid (1..312 = field 1, 313..624 = field 2 at
-  // half-line offset). Line 625 is unused. Use lineToSample() rather
-  // than assuming a uniform grid — field 2 starts half a line into
-  // what would be line 313's integer-grid position.
+  // Real PAL: broad-pulse lines (1–5, 313–317) carry field-sync broad
+  // pulses at HALF_LINE_SAMPLES intervals rather than a per-line narrow
+  // sync. All other lines 1..624 get a normal 4.7 µs sync at line start.
   for (let line = 1; line <= 624; line++) {
+    if (isBroadPulseLine(line)) continue
     const base = lineToSample(line)
     for (let i = SYNC_START; i < SYNC_END; i++) {
       assert.ok(Math.abs(samples[base + i] - LEVEL_SYNC_TIP) < 1e-6,

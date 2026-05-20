@@ -39,18 +39,19 @@ test('decoder recovers vSign matching the encoder', async () => {
   const { PalDecoder } = await import('../src/pal-decoder.js')
   const { HorizontalPLL, trackLines } = await import('../src/pll.js')
   const { findSyncEdges } = await import('../src/sync.js')
-  const { findFieldOneSample } = await import('../src/vsync.js')
+  const { findFieldAnchors } = await import('../src/vsync.js')
   const { LINES_PER_FRAME } = await import('../src/signal.js')
-  const { FIELD_2_START } = await import('../src/timing.js')
 
   const w = 32, h = 32
   const { samples, lines: truth } = encodeFrame(colourBars75(w, h), w, h)
 
   // Rebuild metadata via the stateful decoder path (two field PLLs).
+  // Each PLL anchors from its own field's first-narrow-after-broad, the
+  // same way PalDecoder bootstraps.
   const edges = findSyncEdges(samples)
-  const lineOne = findFieldOneSample(samples) ?? 0
-  const pllF1 = new HorizontalPLL({ period: LINE_SAMPLES, position: lineOne + SYNC_START - 0.5 })
-  const pllF2 = new HorizontalPLL({ period: LINE_SAMPLES, position: lineOne + FIELD_2_START + SYNC_START - 0.5 })
+  const anchors = findFieldAnchors(samples)
+  const pllF1 = new HorizontalPLL({ period: LINE_SAMPLES, position: anchors.field1FirstNarrow - 5 * LINE_SAMPLES })
+  const pllF2 = new HorizontalPLL({ period: LINE_SAMPLES, position: anchors.field2FirstNarrow - 5 * LINE_SAMPLES })
   const tr1 = trackLines(edges, LINES_PER_FRAME, { pll: pllF1 })
   const tr2 = trackLines(edges, LINES_PER_FRAME, { pll: pllF2 })
   const recovered = buildLineMetadata(samples, tr1, tr2)

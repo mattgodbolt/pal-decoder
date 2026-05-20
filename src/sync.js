@@ -24,11 +24,16 @@ export const DEFAULT_SYNC_THRESHOLD = (LEVEL_SYNC_TIP + LEVEL_BLANKING) / 2 // -
 // much shorter than a real sync pulse (~4.7 µs).
 export const DEFAULT_MIN_PULSE_SAMPLES = Math.round(1e-6 * SAMPLE_RATE_HZ) // ≈ 18
 
-// Upper bound on what counts as a "normal" horizontal sync pulse. PAL
-// horizontal sync is 4.7 µs (~83 samples at 4×Fsc); broad (field-sync)
-// pulses span roughly half a line (~526 samples). Anything comfortably
-// above 4.7 µs and below half a line is still "narrow" sync; anything
-// longer is a broad pulse. 12 µs = 213 samples is a safe cutoff.
+// Bounds on what counts as a "normal" horizontal sync pulse.
+//
+//   Equalising pulse: ~2.35 µs = ~42 samples (half-width, on lines
+//     flanking the broad-pulse block in real PAL).
+//   Normal sync:      ~4.7 µs  = ~83 samples.
+//   Broad pulse:      ~27.3 µs = ~484 samples (half a line).
+//
+// Narrow-sync classification picks pulses comfortably between
+// equalising and broad. 3 µs < width < 12 µs excludes both.
+export const MIN_NORMAL_SYNC_SAMPLES = Math.round(3e-6  * SAMPLE_RATE_HZ) // ≈ 53
 export const MAX_NORMAL_SYNC_SAMPLES = Math.round(12e-6 * SAMPLE_RATE_HZ) // ≈ 213
 
 /**
@@ -72,11 +77,14 @@ export function findSyncPulses(samples, opts = {}) {
   return pulses
 }
 
-/** Narrow (normal horizontal sync) leading edges from findSyncPulses. */
+/** Narrow (normal horizontal sync) leading edges from findSyncPulses.
+ * Excludes both equalising pulses (too narrow) and broad pulses (too
+ * wide). */
 export function narrowSyncEdges(samples, opts = {}) {
+  const min = opts.minNormalSyncSamples ?? MIN_NORMAL_SYNC_SAMPLES
   const max = opts.maxPulseSamples ?? MAX_NORMAL_SYNC_SAMPLES
   return findSyncPulses(samples, opts)
-    .filter((p) => p.width <= max)
+    .filter((p) => p.width >= min && p.width <= max)
     .map((p) => p.position)
 }
 
