@@ -113,6 +113,33 @@ test('streaming decoder settles: later frames match earlier ones', () => {
   assert.ok(maxDiff < 0.05, `frame-to-frame drift: max diff ${maxDiff.toFixed(4)}`)
 })
 
+test('streaming decoder survives arbitrary mid-stream cut-in (issue #1)', () => {
+  // Real SDR / ADC captures don't conveniently start on a frame
+  // boundary. Cutting in mid-frame must still produce a correct
+  // picture, including:
+  //   - Field 1 vs field 2 disambiguation (half-line offset of the
+  //     broad-pulse group, not "first group seen = field 1")
+  //   - Subcarrier-grid alignment independent of where we cut
+  //     (initial θ-offset ∈ {0, π/2, π, 3π/2}; the burst loop must
+  //     converge from any of them)
+  const w = 256, h = 64
+  const src = progressive(colourBars75(w, h >> 1), w, h >> 1)
+  const N = 6
+  const signal = encodeFrames(src, w, h, N)
+  const FRAME = signal.length / N
+
+  // Cut into the middle of frame 1, with each of the 4 mod-4
+  // subcarrier alignments. Skip one whole frame for V-sync to
+  // acquire, then probe with extra sample offsets 0..3.
+  for (let extra = 0; extra < 4; extra++) {
+    const shift = FRAME + 12345 + extra
+    const dec = new StreamingDecoder({ width: w, height: h })
+    dec.push(signal.subarray(shift))
+    const psnr = psnrDb(src, dec.framebuffer, { width: w, height: h, marginX: 6 })
+    assert.ok(psnr > 18, `mid-stream cut-in shift=${shift} (mod4=${shift & 3}): PSNR ${psnr.toFixed(2)} dB`)
+  }
+})
+
 function fill(w, h, v) {
   const out = new Float32Array(w * h * 3)
   for (let i = 0; i < w * h * 3; i++) out[i] = v

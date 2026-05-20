@@ -63,10 +63,11 @@ const COS_TAB = [1, 0, -1, 0]
 // comfortably rejecting normal sync.
 const BROAD_PULSE_MIN = Math.round(0.6 * HALF_LINE_SAMPLES)
 
-// Burst-loop gain: how much of each line's burst-phase error we fold
-// into the running θ estimate. Low gain → crystal-like inertia (rides
-// through glitches). 0.25 locks within a few lines on a clean signal.
-const BURST_LOOP_GAIN = 0.25
+// Burst-mean smoothing: per-line bursts are EMA'd into a running mean
+// phasor. Its angle gives θ directly (robust to wrap-around — no local
+// minimum at θ=π); the PAL switch is then resolved per-line by cross
+// product against the mean. Low α → crystal-like inertia.
+const BURST_MEAN_ALPHA = 0.15
 
 // Colour killer: below this burst amplitude, don't pull the NCO. A
 // real burst from our encoder is ~0.075 (peak / √2 at 4×Fsc sampled).
@@ -113,6 +114,15 @@ export class StreamingDecoder {
     this.field = 0     // 0 = not locked; 1 / 2 once field identified
     this.absLine = 0   // 1..625 within a frame
 
+    // --- field-1 vs field-2 disambiguation by half-line offset ----
+    // PAL field 1 broad-pulse block begins at a line boundary; field 2
+    // begins half a line later. We classify by the offset between the
+    // last narrow sync (line origin) and the first broad pulse of the
+    // group, modulo LINE_SAMPLES. Requires H-lock to be meaningful.
+    this.lastNarrowSyncAbs = -1
+    this.firstBroadAbs = -1
+    this.narrowSyncsSeen = 0
+
     // --- subcarrier NCO ---
     // Phase at sample N = N·π/2 + θ, where θ is the running correction.
     this.totalSamples = 0
@@ -127,6 +137,16 @@ export class StreamingDecoder {
     this.burstUAcc = 0
     this.burstVAcc = 0
     this.burstN = 0
+
+    // --- running burst-mean phasor (EMA across lines) -------------
+    // Real PAL alternates V-sign each line, so (+V, −V) bursts sum to
+    // a vector pointing along the U axis (in the rotated frame). The
+    // angle of that running mean encodes θ directly, with no ±π
+    // wrap-around ambiguity. The per-line burst minus the mean encodes
+    // the V-sign for that line.
+    this.burstMeanU = 0
+    this.burstMeanV = 0
+    this.burstMeanSeen = 0
 
     // --- luma / chroma streaming ---
     // 4-sample boxcar: sum of last 4 samples. Has zero at Fsc (period=4
@@ -232,15 +252,22 @@ export class StreamingDecoder {
   // ---------------- sync / vertical / line events ---------------
 
   _onPulseEnd(width) {
+    // Leading edge of this pulse, in absolute sample coordinates.
+    // (totalSamples hasn't been incremented for the current sample yet.)
+    const leadingAbs = this.totalSamples - width
     if (width >= BROAD_PULSE_MIN) {
       // Broad pulse — part of a field-sync block.
-      if (this.broadPulsesInGroup === 0) this._openBroadGroup()
+      if (this.broadPulsesInGroup === 0) {
+        this.firstBroadAbs = leadingAbs
+      }
       this.broadPulsesInGroup++
       this.samplesSinceLastBroad = 0
     } else if (width >= MIN_NORMAL_SYNC_SAMPLES) {
       // Normal horizontal sync. The leading edge was `width` samples
       // back; reset sampleInLine so the new line starts at 0 at that
       // historical edge position (i.e. sampleInLine = width now).
+      this.lastNarrowSyncAbs = leadingAbs
+      this.narrowSyncsSeen++
       this._onLineStart(width)
     }
     // Shorter below-threshold events are chroma dips on saturated
@@ -249,26 +276,50 @@ export class StreamingDecoder {
     // phase discriminator. We do the same via a width gate.
   }
 
-  _openBroadGroup() {
-    // Nothing per-group to reset yet; counter increments in caller.
-  }
-
   _closeBroadGroup() {
     if (this.broadPulsesInGroup >= 3) {
-      // Genuine field-sync. Convention: the first broad group seen is
-      // field 1; subsequent groups alternate.
       this._onFieldStart()
     }
     this.broadPulsesInGroup = 0
   }
 
   _onFieldStart() {
-    this.field = this.field === 1 ? 2 : 1
+    // Classify field 1 vs field 2 by the half-line offset between the
+    // last narrow sync (which sits at a line origin) and the first
+    // broad pulse of this group:
+    //   field 1: broad block starts at a line boundary → gap ≡ 0
+    //   field 2: broad block starts mid-line             → gap ≡ HALF_LINE_SAMPLES
+    // We need a few narrow syncs first so the H-oscillator is trusted.
+    let fieldGuess = 0
+    const HALF_LINE_TOLERANCE = HALF_LINE_SAMPLES / 4
+    if (this.narrowSyncsSeen >= 3 &&
+        this.lastNarrowSyncAbs >= 0 &&
+        this.firstBroadAbs >= 0) {
+      const raw = this.firstBroadAbs - this.lastNarrowSyncAbs
+      const gap = ((raw % LINE_SAMPLES) + LINE_SAMPLES) % LINE_SAMPLES
+      const distTo0 = Math.min(gap, LINE_SAMPLES - gap)
+      const distToHalf = Math.abs(gap - HALF_LINE_SAMPLES)
+      if (distTo0 < HALF_LINE_TOLERANCE) fieldGuess = 1
+      else if (distToHalf < HALF_LINE_TOLERANCE) fieldGuess = 2
+    }
+    if (fieldGuess !== 0) {
+      this.field = fieldGuess
+    } else if (this.field !== 0) {
+      // No half-line evidence (e.g. mid-stream cut-in inside a broad
+      // block, no prior H-lock). Fall back to alternation; the next
+      // group will give us a real classification.
+      this.field = this.field === 1 ? 2 : 1
+    } else {
+      // First-ever group with no H-lock; ignore and wait for the next.
+      this.firstBroadAbs = -1
+      return
+    }
     // The first narrow sync after a field's broad block is encoder
     // line 6 (field 1) or line 318 (field 2). Seed absLine so the
     // next _onLineStart increments to the right number.
     this.absLine = this.field === 1 ? 5 : 317
     this.locked = true
+    this.firstBroadAbs = -1
   }
 
   _onLineStart(syncWidth) {
@@ -280,40 +331,37 @@ export class StreamingDecoder {
 
   _applyBurstToNco() {
     if (this.burstN === 0) return
-    // Colour killer: only real burst should pull the NCO. VBI lines
-    // have no burst written at all; their (0, 0) accumulator gives
-    // a meaningless atan2(0, 0) that would otherwise drag θ around.
-    const amp = Math.hypot(this.burstUAcc, this.burstVAcc) / this.burstN
-    if (amp < COLOUR_KILLER) {
-      this.burstUAcc = 0
-      this.burstVAcc = 0
-      this.burstN = 0
-      return
-    }
-    const phase = Math.atan2(this.burstVAcc, this.burstUAcc)
-    // Classify PAL ident from which ideal angle the burst is closer to.
-    // +V bursts at +3π/4 in the rotated frame, −V at −3π/4. With θ
-    // offset applied: ideal±θ. Easiest: rotate measurement by −θ and
-    // classify against ±3π/4.
-    const unrotated = wrap(phase - this.theta)
-    const dPlus  = wrap(unrotated - (+3 * Math.PI / 4))
-    const dMinus = wrap(unrotated - (-3 * Math.PI / 4))
-    let thisLineVSign, err
-    if (Math.abs(dPlus) < Math.abs(dMinus)) {
-      thisLineVSign = +1
-      err = dPlus
-    } else {
-      thisLineVSign = -1
-      err = dMinus
-    }
-    this.vSign = thisLineVSign
-    // Fold the phase error into the running θ estimate, first-order loop.
-    this.theta = wrap(this.theta + BURST_LOOP_GAIN * err)
-    this.cosTheta = Math.cos(this.theta)
-    this.sinTheta = Math.sin(this.theta)
+    const uLine = this.burstUAcc / this.burstN
+    const vLine = this.burstVAcc / this.burstN
     this.burstUAcc = 0
     this.burstVAcc = 0
     this.burstN = 0
+    // Colour killer: VBI lines write no burst, so (uLine, vLine) ≈ 0.
+    // Don't pull the mean toward zero on those.
+    const amp = Math.hypot(uLine, vLine)
+    if (amp < COLOUR_KILLER) return
+    // Seed mean on the first burst; EMA thereafter. With α=0.15 the
+    // mean settles to within a few percent of true after ~30 lines.
+    if (this.burstMeanSeen === 0) {
+      this.burstMeanU = uLine
+      this.burstMeanV = vLine
+    } else {
+      this.burstMeanU += BURST_MEAN_ALPHA * (uLine - this.burstMeanU)
+      this.burstMeanV += BURST_MEAN_ALPHA * (vLine - this.burstMeanV)
+    }
+    this.burstMeanSeen++
+    // Mean phasor points along the U axis in the rotated frame, i.e.
+    // at angle π + θ (both ±V bursts have U component = -1/√2 ·
+    // BURST_PEAK, so the mean lies on the negative U axis). Recover θ.
+    const meanPhase = Math.atan2(this.burstMeanV, this.burstMeanU)
+    this.theta = wrap(meanPhase - Math.PI)
+    this.cosTheta = Math.cos(this.theta)
+    this.sinTheta = Math.sin(this.theta)
+    // Per-line vSign: cross product of this line's burst against the
+    // mean. +V bursts sit on one side of the mean's U axis, −V on the
+    // other; the cross product's sign distinguishes them.
+    const cross = vLine * this.burstMeanU - uLine * this.burstMeanV
+    this.vSign = cross < 0 ? +1 : -1
   }
 
   _imageRowForCurrentLine() {
